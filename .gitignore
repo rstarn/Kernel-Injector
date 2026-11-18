@@ -1,0 +1,14 @@
+# Build artifacts (Phase 1)
+Build/Output/
+Build/Objects/
+
+# Reference asset
+Assets/Jlov.dll
+
+# Compiler intermediates
+*.obj
+*.pdb
+*.ilk
+*.idb
+*.exp
+*.lib

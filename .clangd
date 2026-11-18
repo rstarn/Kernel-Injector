@@ -1,0 +1,10 @@
+CompileFlags:
+  CompilationDatabase: .
+  Add:
+    - --target=x86_64-pc-windows-msvc
+    - -fms-extensions
+    - -fms-compatibility
+    - -fms-compatibility-version=19.51
+Diagnostics:
+  Suppress:
+    - unused-includes

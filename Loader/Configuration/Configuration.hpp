@@ -1,0 +1,51 @@
+#pragma once
+
+/*
+ * Configuration.hpp - user-mode injection settings.
+ *
+ * Contract: value object holding Phase 1 loader options, with defaults drawn
+ * from Protocol.h. No kernel headers are used.
+ * Inputs: command line or a simple key=value file.
+ * Outputs: normalized bootstrap path via ResolvedBootstrapPath.
+ * Failure modes: ParseFromCommandLine returns false on a missing value;
+ * LoadFromFile returns false when the file cannot be opened.
+ */
+
+#include <cstdint>
+#include <string>
+
+struct Configuration {
+    bool pingRequested;
+    bool connectOnly;
+    std::wstring bootstrapPath;
+    uint32_t timeoutMilliseconds;
+
+    /*
+     * Contract: installs Phase 1 defaults (no flags, %TEMP% bootstrap path,
+     * 500 ms timeout). Inputs: none. Outputs: initialized object.
+     * Failure modes: none; allocation failure in std::wstring throws.
+     */
+    Configuration();
+
+    /*
+     * Contract: reads --ping, --connect-only and --bootstrap-path <value>.
+     * Inputs: wmain argc/argv. Outputs: mutated configuration.
+     * Failure modes: false when --bootstrap-path has no following value.
+     */
+    bool ParseFromCommandLine(int argc, wchar_t** argv);
+
+    /*
+     * Contract: reads key=value overrides from a text file.
+     * Inputs: UTF-16 file path. Outputs: mutated configuration.
+     * Failure modes: false when the file cannot be opened or a numeric value
+     * is malformed.
+     */
+    bool LoadFromFile(const std::wstring& path);
+
+    /*
+     * Contract: expands %VARIABLE% references in bootstrapPath.
+     * Inputs: none beyond object state. Outputs: expanded path, or L"".
+     * Failure modes: L"" when ExpandEnvironmentStringsW fails.
+     */
+    std::wstring ResolvedBootstrapPath() const;
+};
