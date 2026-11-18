@@ -1,19 +1,41 @@
 /*
  * InjectorDriver.sys entry point for Phase 1.
  *
- * Contract: create the one-shot bootstrap device, install the IOCTL dispatch,
- * and return STATUS_SUCCESS. Nothing else is initialized in Phase 1.
- * Inputs: DriverObject and RegistryPath supplied by the kernel loader (or by
- * the external manual mapper used for Phase 1 validation).
+ * Contract: create the one-shot secured bootstrap device, install the IOCTL
+ * dispatch and unload routine, and return STATUS_SUCCESS. DriverEntry failure
+ * unwinds partial initialization directly because the OS does not call
+ * DriverUnload in that case.
+ * Inputs: DriverObject and RegistryPath supplied by the kernel loader.
  * Outputs: NTSTATUS describing initialization success.
- * Failure modes: any failed initialization step unwinds and returns the
- * failing status; no dispatch is installed on failure.
+ * Failure modes: any failed initialization step unwinds and returns status.
  */
 
 #include <wdm.h>
 
-#include "Bootstrap.h"
-#include "../Communication/Bridge.h"
+#include "Startup/Bootstrap.h"
+#include "../Communication/Endpoint/Bridge.h"
+
+static NTSTATUS g_lastUnloadStatus = STATUS_SUCCESS;
+
+static VOID DriverUnload(PDRIVER_OBJECT DriverObject) {
+    /* Enter terminal shutdown first so no REGISTER/KICK can be admitted while
+     * the region and bootstrap resources are being torn down. */
+    (void)BridgeBeginShutdown();
+    const NTSTATUS regionStatus = BridgeReleaseResources();
+    const NTSTATUS cleanupStatus = BootstrapDestroy();
+
+    UNREFERENCED_PARAMETER(DriverObject);
+
+    /* DriverUnload cannot return a status. BootstrapDestroy logs its own
+     * failures; Bridge release failures have no IRP channel here, so post them
+     * to the kernel error log instead of only keeping a private global. */
+    if (!NT_SUCCESS(regionStatus)) {
+        g_lastUnloadStatus = regionStatus;
+        BootstrapReportCleanupFailure(regionStatus);
+    } else if (!NT_SUCCESS(cleanupStatus)) {
+        g_lastUnloadStatus = cleanupStatus;
+    }
+}
 
 NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath) {
     PDEVICE_OBJECT deviceObject = NULL;
@@ -28,9 +50,19 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath) 
 
     status = BridgeRegisterIoControl(DriverObject, deviceObject);
     if (!NT_SUCCESS(status)) {
-        BootstrapDestroy();
+        /* Preserve the original failure; record cleanup failure separately. */
+        const NTSTATUS cleanupStatus = BootstrapDestroy();
+        if (!NT_SUCCESS(cleanupStatus)) {
+            g_lastUnloadStatus = cleanupStatus;
+        }
         return status;
     }
 
+    DriverObject->DriverUnload = DriverUnload;
+
+    /* The device is created here during DriverEntry, not dynamically after it
+     * returns. The I/O manager clears DO_DEVICE_INITIALIZING when DriverEntry
+     * returns, so all dispatch routines, security settings and bootstrap
+     * resources are ready before the device can be opened. */
     return STATUS_SUCCESS;
 }

@@ -1,7 +1,7 @@
 #pragma once
 
 /*
- * CommandLine.hpp - argv translation for Loader.exe.
+ * Command.hpp - argv translation for Client.exe.
  *
  * Contract: converts the Phase 1 command line into an Configuration.
  * Inputs: standard wmain argc/argv.
@@ -10,7 +10,7 @@
  * unknown arguments are ignored with a warning printed to stdout.
  */
 
-#include "../Configuration/Configuration.hpp"
+#include "../Settings/Configuration.hpp"
 
 class CommandLine {
 public:

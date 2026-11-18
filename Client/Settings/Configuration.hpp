@@ -3,12 +3,11 @@
 /*
  * Configuration.hpp - user-mode injection settings.
  *
- * Contract: value object holding Phase 1 loader options, with defaults drawn
+ * Contract: value object holding Phase 1 client options, with defaults drawn
  * from Protocol.h. No kernel headers are used.
- * Inputs: command line or a simple key=value file.
+ * Inputs: command line only.
  * Outputs: normalized bootstrap path via ResolvedBootstrapPath.
- * Failure modes: ParseFromCommandLine returns false on a missing value;
- * LoadFromFile returns false when the file cannot be opened.
+ * Failure modes: ParseFromCommandLine returns false on a missing value.
  */
 
 #include <cstdint>
@@ -18,11 +17,10 @@ struct Configuration {
     bool pingRequested;
     bool connectOnly;
     std::wstring bootstrapPath;
-    uint32_t timeoutMilliseconds;
 
     /*
-     * Contract: installs Phase 1 defaults (no flags, %TEMP% bootstrap path,
-     * 500 ms timeout). Inputs: none. Outputs: initialized object.
+     * Contract: installs Phase 1 defaults (no flags, system-temp bootstrap
+     * path). Inputs: none. Outputs: initialized object.
      * Failure modes: none; allocation failure in std::wstring throws.
      */
     Configuration();
@@ -33,14 +31,6 @@ struct Configuration {
      * Failure modes: false when --bootstrap-path has no following value.
      */
     bool ParseFromCommandLine(int argc, wchar_t** argv);
-
-    /*
-     * Contract: reads key=value overrides from a text file.
-     * Inputs: UTF-16 file path. Outputs: mutated configuration.
-     * Failure modes: false when the file cannot be opened or a numeric value
-     * is malformed.
-     */
-    bool LoadFromFile(const std::wstring& path);
 
     /*
      * Contract: expands %VARIABLE% references in bootstrapPath.

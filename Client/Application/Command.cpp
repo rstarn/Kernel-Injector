@@ -1,4 +1,4 @@
-#include "CommandLine.hpp"
+#include "Command.hpp"
 
 #include <Windows.h>
 #include <iostream>
@@ -26,6 +26,6 @@ bool CommandLine::Process(int argc, wchar_t** argv, Configuration& configuration
 }
 
 void CommandLine::PrintUsage() {
-    std::wcout << L"Usage: Loader.exe [--ping] [--connect-only] "
+    std::wcout << L"Usage: Client.exe [--ping] [--connect-only] "
                   L"[--bootstrap-path <path>]" << std::endl;
 }

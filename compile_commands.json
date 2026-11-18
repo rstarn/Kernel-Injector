@@ -1,47 +1,47 @@
 [
   {
     "directory": "D:\\Ameger\\Kernel Injector",
-    "command": "cl.exe /nologo /c /W4 /EHsc /std:c++17 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /D_WIN64 /I\"D:\\Ameger\\Kernel Injector\\Shared\" /I\"C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\VC\\Tools\\MSVC\\14.51.36231\\include\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\um\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\shared\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\ucrt\" \"D:\\Ameger\\Kernel Injector\\Loader\\Application\\Main.cpp\"",
-    "file": "D:\\Ameger\\Kernel Injector\\Loader\\Application\\Main.cpp"
+    "command": "cl.exe /nologo /c /W4 /EHsc /std:c++17 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /D_WIN64 /I\"D:\\Ameger\\Kernel Injector\\Shared\" /I\"C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\VC\\Tools\\MSVC\\14.51.36231\\include\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\um\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\shared\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\ucrt\" \"D:\\Ameger\\Kernel Injector\\Client\\Application\\Main.cpp\"",
+    "file": "D:\\Ameger\\Kernel Injector\\Client\\Application\\Main.cpp"
   },
   {
     "directory": "D:\\Ameger\\Kernel Injector",
-    "command": "cl.exe /nologo /c /W4 /EHsc /std:c++17 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /D_WIN64 /I\"D:\\Ameger\\Kernel Injector\\Shared\" /I\"C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\VC\\Tools\\MSVC\\14.51.36231\\include\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\um\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\shared\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\ucrt\" \"D:\\Ameger\\Kernel Injector\\Loader\\Application\\CommandLine.cpp\"",
-    "file": "D:\\Ameger\\Kernel Injector\\Loader\\Application\\CommandLine.cpp"
+    "command": "cl.exe /nologo /c /W4 /EHsc /std:c++17 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /D_WIN64 /I\"D:\\Ameger\\Kernel Injector\\Shared\" /I\"C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\VC\\Tools\\MSVC\\14.51.36231\\include\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\um\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\shared\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\ucrt\" \"D:\\Ameger\\Kernel Injector\\Client\\Application\\Command.cpp\"",
+    "file": "D:\\Ameger\\Kernel Injector\\Client\\Application\\Command.cpp"
   },
   {
     "directory": "D:\\Ameger\\Kernel Injector",
-    "command": "cl.exe /nologo /c /W4 /EHsc /std:c++17 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /D_WIN64 /I\"D:\\Ameger\\Kernel Injector\\Shared\" /I\"C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\VC\\Tools\\MSVC\\14.51.36231\\include\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\um\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\shared\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\ucrt\" \"D:\\Ameger\\Kernel Injector\\Loader\\Configuration\\Configuration.cpp\"",
-    "file": "D:\\Ameger\\Kernel Injector\\Loader\\Configuration\\Configuration.cpp"
+    "command": "cl.exe /nologo /c /W4 /EHsc /std:c++17 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /D_WIN64 /I\"D:\\Ameger\\Kernel Injector\\Shared\" /I\"C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\VC\\Tools\\MSVC\\14.51.36231\\include\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\um\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\shared\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\ucrt\" \"D:\\Ameger\\Kernel Injector\\Client\\Settings\\Configuration.cpp\"",
+    "file": "D:\\Ameger\\Kernel Injector\\Client\\Settings\\Configuration.cpp"
   },
   {
     "directory": "D:\\Ameger\\Kernel Injector",
-    "command": "cl.exe /nologo /c /W4 /EHsc /std:c++17 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /D_WIN64 /I\"D:\\Ameger\\Kernel Injector\\Shared\" /I\"C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\VC\\Tools\\MSVC\\14.51.36231\\include\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\um\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\shared\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\ucrt\" \"D:\\Ameger\\Kernel Injector\\Loader\\Communication\\ChannelClient.cpp\"",
-    "file": "D:\\Ameger\\Kernel Injector\\Loader\\Communication\\ChannelClient.cpp"
+    "command": "cl.exe /nologo /c /W4 /EHsc /std:c++17 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /D_WIN64 /I\"D:\\Ameger\\Kernel Injector\\Shared\" /I\"C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\VC\\Tools\\MSVC\\14.51.36231\\include\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\um\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\shared\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\ucrt\" \"D:\\Ameger\\Kernel Injector\\Client\\Transport\\Channel.cpp\"",
+    "file": "D:\\Ameger\\Kernel Injector\\Client\\Transport\\Channel.cpp"
   },
   {
     "directory": "D:\\Ameger\\Kernel Injector",
-    "command": "cl.exe /nologo /c /W4 /TC /std:c17 /D_AMD64_=1 /DAMD64=1 /D_WIN64=1 /I\"D:\\Ameger\\Kernel Injector\\Shared\" /I\"C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\VC\\Tools\\MSVC\\14.51.36231\\include\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\km\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\shared\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\ucrt\" \"D:\\Ameger\\Kernel Injector\\Driver\\Initialization\\Driver.c\"",
+    "command": "cl.exe /nologo /c /W4 /TC /std:c17 /D_AMD64_=1 /DAMD64=1 /D_WIN64=1 /DNTDDI_VERSION=0x0A000000 /I\"D:\\Ameger\\Kernel Injector\\Shared\" /I\"C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\VC\\Tools\\MSVC\\14.51.36231\\include\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\km\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\shared\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\ucrt\" \"D:\\Ameger\\Kernel Injector\\Driver\\Initialization\\Driver.c\"",
     "file": "D:\\Ameger\\Kernel Injector\\Driver\\Initialization\\Driver.c"
   },
   {
     "directory": "D:\\Ameger\\Kernel Injector",
-    "command": "cl.exe /nologo /c /W4 /TC /std:c17 /D_AMD64_=1 /DAMD64=1 /D_WIN64=1 /I\"D:\\Ameger\\Kernel Injector\\Shared\" /I\"C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\VC\\Tools\\MSVC\\14.51.36231\\include\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\km\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\shared\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\ucrt\" \"D:\\Ameger\\Kernel Injector\\Driver\\Initialization\\Bootstrap.c\"",
-    "file": "D:\\Ameger\\Kernel Injector\\Driver\\Initialization\\Bootstrap.c"
+    "command": "cl.exe /nologo /c /W4 /TC /std:c17 /D_AMD64_=1 /DAMD64=1 /D_WIN64=1 /DNTDDI_VERSION=0x0A000000 /I\"D:\\Ameger\\Kernel Injector\\Shared\" /I\"C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\VC\\Tools\\MSVC\\14.51.36231\\include\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\km\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\shared\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\ucrt\" \"D:\\Ameger\\Kernel Injector\\Driver\\Initialization\\Startup\\Bootstrap.c\"",
+    "file": "D:\\Ameger\\Kernel Injector\\Driver\\Initialization\\Startup\\Bootstrap.c"
   },
   {
     "directory": "D:\\Ameger\\Kernel Injector",
-    "command": "cl.exe /nologo /c /W4 /TC /std:c17 /D_AMD64_=1 /DAMD64=1 /D_WIN64=1 /I\"D:\\Ameger\\Kernel Injector\\Shared\" /I\"C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\VC\\Tools\\MSVC\\14.51.36231\\include\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\km\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\shared\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\ucrt\" \"D:\\Ameger\\Kernel Injector\\Driver\\Communication\\Bridge.c\"",
-    "file": "D:\\Ameger\\Kernel Injector\\Driver\\Communication\\Bridge.c"
+    "command": "cl.exe /nologo /c /W4 /TC /std:c17 /D_AMD64_=1 /DAMD64=1 /D_WIN64=1 /DNTDDI_VERSION=0x0A000000 /I\"D:\\Ameger\\Kernel Injector\\Shared\" /I\"C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\VC\\Tools\\MSVC\\14.51.36231\\include\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\km\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\shared\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\ucrt\" \"D:\\Ameger\\Kernel Injector\\Driver\\Communication\\Endpoint\\Bridge.c\"",
+    "file": "D:\\Ameger\\Kernel Injector\\Driver\\Communication\\Endpoint\\Bridge.c"
   },
   {
     "directory": "D:\\Ameger\\Kernel Injector",
-    "command": "cl.exe /nologo /c /W4 /TC /std:c17 /D_AMD64_=1 /DAMD64=1 /D_WIN64=1 /I\"D:\\Ameger\\Kernel Injector\\Shared\" /I\"C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\VC\\Tools\\MSVC\\14.51.36231\\include\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\km\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\shared\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\ucrt\" \"D:\\Ameger\\Kernel Injector\\Driver\\Communication\\Dispatcher.c\"",
-    "file": "D:\\Ameger\\Kernel Injector\\Driver\\Communication\\Dispatcher.c"
+    "command": "cl.exe /nologo /c /W4 /TC /std:c17 /D_AMD64_=1 /DAMD64=1 /D_WIN64=1 /DNTDDI_VERSION=0x0A000000 /I\"D:\\Ameger\\Kernel Injector\\Shared\" /I\"C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\VC\\Tools\\MSVC\\14.51.36231\\include\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\km\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\shared\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\ucrt\" \"D:\\Ameger\\Kernel Injector\\Driver\\Communication\\Routing\\Dispatcher.c\"",
+    "file": "D:\\Ameger\\Kernel Injector\\Driver\\Communication\\Routing\\Dispatcher.c"
   },
   {
     "directory": "D:\\Ameger\\Kernel Injector",
-    "command": "cl.exe /nologo /c /W4 /TC /std:c17 /D_AMD64_=1 /DAMD64=1 /D_WIN64=1 /I\"D:\\Ameger\\Kernel Injector\\Shared\" /I\"C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\VC\\Tools\\MSVC\\14.51.36231\\include\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\km\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\shared\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\ucrt\" \"D:\\Ameger\\Kernel Injector\\Driver\\Utilities\\Guard.c\"",
+    "command": "cl.exe /nologo /c /W4 /TC /std:c17 /D_AMD64_=1 /DAMD64=1 /D_WIN64=1 /DNTDDI_VERSION=0x0A000000 /I\"D:\\Ameger\\Kernel Injector\\Shared\" /I\"C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\VC\\Tools\\MSVC\\14.51.36231\\include\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\km\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\shared\" /I\"C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.28000.0\\ucrt\" \"D:\\Ameger\\Kernel Injector\\Driver\\Utilities\\Guard.c\"",
     "file": "D:\\Ameger\\Kernel Injector\\Driver\\Utilities\\Guard.c"
   }
 ]

@@ -1,17 +1,21 @@
 #include "Dispatcher.h"
 
-NTSTATUS DispatcherDispatch(volatile AMGER_COMMAND_HEADER* Header) {
+NTSTATUS DispatcherDispatch(
+    const AMGER_COMMAND_SNAPSHOT* Snapshot,
+    uint32_t* OutStatus) {
     NTSTATUS status;
 
-    if (Header == NULL) {
+    if (OutStatus == NULL) {
         return STATUS_INVALID_PARAMETER;
     }
 
-    if (Header->Magic != AMGER_MAGIC_NUMBER ||
-        Header->Version != AMGER_PROTOCOL_VERSION) {
+    if (Snapshot == NULL) {
+        status = STATUS_INVALID_PARAMETER;
+    } else if (Snapshot->Magic != AMGER_MAGIC_NUMBER ||
+               Snapshot->Version != AMGER_PROTOCOL_VERSION) {
         status = STATUS_INVALID_PARAMETER;
     } else {
-        switch (Header->Command) {
+        switch (Snapshot->Command) {
         case AMGER_COMMAND_PING:
             status = STATUS_SUCCESS;
             break;
@@ -26,6 +30,6 @@ NTSTATUS DispatcherDispatch(volatile AMGER_COMMAND_HEADER* Header) {
         }
     }
 
-    Header->Status = (uint32_t)status;
+    *OutStatus = (uint32_t)status;
     return status;
 }

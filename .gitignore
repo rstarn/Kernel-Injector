@@ -3,7 +3,7 @@ Build/Output/
 Build/Objects/
 
 # Reference asset
-Assets/Jlov.dll
+Assets/Target.dll
 
 # Compiler intermediates
 *.obj

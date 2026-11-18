@@ -1,5 +1,5 @@
 /*
- * Loader.exe entry point for Phase 1.
+ * Client.exe entry point for Phase 1.
  *
  * Contract: parse options, locate the driver-written bootstrap file, connect
  * to the random GUID device, and optionally perform one PING round-trip.
@@ -14,9 +14,9 @@
 #include <iostream>
 #include <string>
 
-#include "CommandLine.hpp"
-#include "../Configuration/Configuration.hpp"
-#include "../Communication/ChannelClient.hpp"
+#include "Command.hpp"
+#include "../Settings/Configuration.hpp"
+#include "../Transport/Channel.hpp"
 
 namespace {
 
@@ -82,7 +82,7 @@ int wmain(int argc, wchar_t** argv) {
         return 0;
     }
 
-    const bool pingSucceeded = client.Ping(configuration.timeoutMilliseconds);
+    const bool pingSucceeded = client.Ping();
     client.Disconnect();
 
     if (!pingSucceeded) {

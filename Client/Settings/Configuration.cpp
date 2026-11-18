@@ -1,16 +1,13 @@
 #include "Configuration.hpp"
 
 #include <Windows.h>
-#include <fstream>
-#include <sstream>
 
 #include "../../Shared/Protocol.h"
 
 Configuration::Configuration()
     : pingRequested(false),
       connectOnly(false),
-      bootstrapPath(AMGER_BOOTSTRAP_PATH),
-      timeoutMilliseconds(500u) {
+      bootstrapPath(AMGER_BOOTSTRAP_PATH) {
 }
 
 bool Configuration::ParseFromCommandLine(int argc, wchar_t** argv) {
@@ -33,40 +30,6 @@ bool Configuration::ParseFromCommandLine(int argc, wchar_t** argv) {
             }
             bootstrapPath = argv[++index];
             continue;
-        }
-    }
-
-    return true;
-}
-
-bool Configuration::LoadFromFile(const std::wstring& path) {
-    std::wifstream stream(path.c_str());
-    if (!stream.is_open()) {
-        return false;
-    }
-
-    std::wstring line;
-    while (std::getline(stream, line)) {
-        const std::wstring::size_type separator = line.find(L'=');
-        if (separator == std::wstring::npos) {
-            continue;
-        }
-
-        const std::wstring key = line.substr(0, separator);
-        const std::wstring value = line.substr(separator + 1);
-
-        if (key == L"Ping") {
-            pingRequested = (value == L"1" || value == L"true");
-        } else if (key == L"ConnectOnly") {
-            connectOnly = (value == L"1" || value == L"true");
-        } else if (key == L"BootstrapPath") {
-            bootstrapPath = value;
-        } else if (key == L"TimeoutMilliseconds") {
-            try {
-                timeoutMilliseconds = static_cast<uint32_t>(std::stoul(value));
-            } catch (...) {
-                return false;
-            }
         }
     }
 

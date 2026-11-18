@@ -1,4 +1,4 @@
-#include "ChannelClient.hpp"
+#include "Channel.hpp"
 
 #include <cstring>
 
@@ -51,6 +51,36 @@ bool ChannelClient::ReadBootstrapPath(
     return devicePath.rfind(L"\\\\.\\", 0u) == 0u;
 }
 
+void ChannelClient::WriteCommand(volatile AMGER_COMMAND_HEADER* header, uint32_t command) {
+    volatile AMGER_HEADER_CONTROL* control =
+        reinterpret_cast<volatile AMGER_HEADER_CONTROL*>(&header->Reserved[0]);
+
+    volatile long* sequenceAddress = reinterpret_cast<volatile long*>(&control->Sequence);
+    uint32_t sequence = static_cast<uint32_t>(
+        InterlockedCompareExchange(sequenceAddress, 0L, 0L));
+    sequence = (sequence & 1u) ? sequence + 2u : sequence + 1u;
+    InterlockedExchange(sequenceAddress, static_cast<long>(sequence));
+    MemoryBarrier();
+
+    header->Magic = AMGER_MAGIC_NUMBER;
+    header->Version = AMGER_PROTOCOL_VERSION;
+    header->Command = command;
+    header->Status = AMGER_STATUS_PENDING;
+    header->PayloadVirtualAddress = 0u;
+    header->PayloadSize = 0u;
+    header->TargetProcessId = 0u;
+    header->Options = 0u;
+    header->CompletionEventHandle = 0u;
+
+    MemoryBarrier();
+    InterlockedExchange(sequenceAddress, static_cast<long>(sequence + 1u));
+}
+
+uint32_t ChannelClient::ReadFinalStatus(volatile AMGER_COMMAND_HEADER* header) {
+    MemoryBarrier();
+    return header->Status;
+}
+
 bool ChannelClient::Connect(const std::wstring& bootstrapPath) {
     Disconnect();
 
@@ -71,9 +101,11 @@ bool ChannelClient::Connect(const std::wstring& bootstrapPath) {
         return false;
     }
 
+    /* PING needs only the command header; the 64 MB maximum stays a protocol
+     * capacity limit for future payloads. */
     sharedRegion = VirtualAlloc(
         nullptr,
-        AMGER_SHARED_REGION_SIZE,
+        AMGER_COMMAND_REGION_SIZE,
         MEM_COMMIT | MEM_RESERVE,
         PAGE_READWRITE);
     if (sharedRegion == nullptr) {
@@ -81,11 +113,11 @@ bool ChannelClient::Connect(const std::wstring& bootstrapPath) {
         deviceHandle = INVALID_HANDLE_VALUE;
         return false;
     }
-    std::memset(sharedRegion, 0, AMGER_SHARED_REGION_SIZE);
+    std::memset(sharedRegion, 0, AMGER_COMMAND_REGION_SIZE);
 
     AMGER_SHARED_REGION_REQUEST request = {};
     request.VirtualAddress = reinterpret_cast<uint64_t>(sharedRegion);
-    request.Size = static_cast<uint64_t>(AMGER_SHARED_REGION_SIZE);
+    request.Size = static_cast<uint64_t>(AMGER_COMMAND_REGION_SIZE);
 
     DWORD bytesReturned = 0u;
     const BOOL ioctlOk = DeviceIoControl(
@@ -106,23 +138,15 @@ bool ChannelClient::Connect(const std::wstring& bootstrapPath) {
     return true;
 }
 
-bool ChannelClient::Ping(uint32_t timeoutMilliseconds) {
+bool ChannelClient::Ping() {
     if (deviceHandle == INVALID_HANDLE_VALUE || sharedRegion == nullptr || header == nullptr) {
         return false;
     }
 
-    AMGER_COMMAND_HEADER command = {};
-    command.Magic = AMGER_MAGIC_NUMBER;
-    command.Version = AMGER_PROTOCOL_VERSION;
-    command.Command = AMGER_COMMAND_PING;
-    std::memcpy(const_cast<AMGER_COMMAND_HEADER*>(header), &command, sizeof(command));
-    MemoryBarrier();
+    WriteCommand(header, AMGER_COMMAND_PING);
 
     DWORD bytesReturned = 0u;
-    /* The device is deleted during registration; this IOCTL is the last use
-     * of the handle. A failure here is tolerated when the shared Status was
-     * nevertheless updated by the driver. */
-    (void)DeviceIoControl(
+    const BOOL kickOk = DeviceIoControl(
         deviceHandle,
         AMGER_IOCTL_KICK,
         nullptr,
@@ -132,21 +156,12 @@ bool ChannelClient::Ping(uint32_t timeoutMilliseconds) {
         &bytesReturned,
         nullptr);
 
-    const DWORD startTime = GetTickCount();
-    uint32_t status = 0u;
-    for (;;) {
-        status = static_cast<uint32_t>(InterlockedCompareExchange(
-            reinterpret_cast<volatile long*>(&header->Status), 0L, 0L));
-        if (status != 0u) {
-            break;
-        }
-        if ((GetTickCount() - startTime) >= timeoutMilliseconds) {
-            break;
-        }
-        Sleep(1u);
-    }
+    const uint32_t status = ReadFinalStatus(header);
 
-    return status == 0u;
+    /* No polling: the synchronous IOCTL is the completion boundary. */
+    return kickOk != FALSE &&
+           status != AMGER_STATUS_PENDING &&
+           status == 0u; /* STATUS_SUCCESS is zero in both environments. */
 }
 
 void ChannelClient::Disconnect() {

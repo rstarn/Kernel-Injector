@@ -74,47 +74,55 @@ set "AMGER_KM_LIB=C:\Program Files (x86)\Windows Kits\10\Lib\%AMGER_WDK_VERSION%
 echo [Ameger] WDK %AMGER_WDK_VERSION%
 
 rem --- Client.exe ------------------------------------------------------------
-set "AMGER_LOADER_FLAGS=/nologo /W4 /EHsc /std:c++17 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /I"%AMGER_ROOT%\Shared""
+set "AMGER_CLIENT_FLAGS=/nologo /W4 /EHsc /std:c++17 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /I"%AMGER_ROOT%\Shared""
 
-cl %AMGER_LOADER_FLAGS% /c /Fo"%AMGER_OBJECTS%\Main.obj" "%AMGER_ROOT%\Loader\Application\Main.cpp"
+cl %AMGER_CLIENT_FLAGS% /c /Fo"%AMGER_OBJECTS%\Main.obj" "%AMGER_ROOT%\Client\Application\Main.cpp"
 if errorlevel 1 goto :Failed
-cl %AMGER_LOADER_FLAGS% /c /Fo"%AMGER_OBJECTS%\CommandLine.obj" "%AMGER_ROOT%\Loader\Application\CommandLine.cpp"
+cl %AMGER_CLIENT_FLAGS% /c /Fo"%AMGER_OBJECTS%\Command.obj" "%AMGER_ROOT%\Client\Application\Command.cpp"
 if errorlevel 1 goto :Failed
-cl %AMGER_LOADER_FLAGS% /c /Fo"%AMGER_OBJECTS%\Configuration.obj" "%AMGER_ROOT%\Loader\Configuration\Configuration.cpp"
+cl %AMGER_CLIENT_FLAGS% /c /Fo"%AMGER_OBJECTS%\Configuration.obj" "%AMGER_ROOT%\Client\Settings\Configuration.cpp"
 if errorlevel 1 goto :Failed
-cl %AMGER_LOADER_FLAGS% /c /Fo"%AMGER_OBJECTS%\ChannelClient.obj" "%AMGER_ROOT%\Loader\Communication\ChannelClient.cpp"
+cl %AMGER_CLIENT_FLAGS% /c /Fo"%AMGER_OBJECTS%\Channel.obj" "%AMGER_ROOT%\Client\Transport\Channel.cpp"
 if errorlevel 1 goto :Failed
 
-link /nologo /subsystem:console /machine:x64 /out:"%AMGER_OUTPUT%\Client.exe" ^
+rem Disable linker manifest generation so no sidecar is written to Build\Output.
+link /nologo /subsystem:console /machine:x64 /manifest:no /out:"%AMGER_OUTPUT%\Client.exe" ^
     "%AMGER_OBJECTS%\Main.obj" ^
-    "%AMGER_OBJECTS%\CommandLine.obj" ^
+    "%AMGER_OBJECTS%\Command.obj" ^
     "%AMGER_OBJECTS%\Configuration.obj" ^
-    "%AMGER_OBJECTS%\ChannelClient.obj" ^
+    "%AMGER_OBJECTS%\Channel.obj" ^
     kernel32.lib user32.lib
 if errorlevel 1 goto :Failed
 
+rem Remove a sidecar left by an older build; Output must contain binaries only.
+if exist "%AMGER_OUTPUT%\Client.exe.manifest" del /q "%AMGER_OUTPUT%\Client.exe.manifest"
+
+rem Embed the source manifest with requireAdministrator so the client matches the device DACL.
+mt.exe -nologo -manifest "%AMGER_ROOT%\Build\Client.exe.manifest" "-outputresource:%AMGER_OUTPUT%\Client.exe;#1"
+if errorlevel 1 goto :Failed
+
 rem --- Driver.sys ----------------------------------------------------
-set "AMGER_DRIVER_FLAGS=/nologo /W4 /TC /GS- /kernel /D_AMD64_=1 /DAMD64=1 /D_WIN64=1 /I"%AMGER_ROOT%\Shared" /I"%AMGER_KM_INCLUDE%" /I"%AMGER_SHARED_INCLUDE%" /I"%AMGER_UCRT_INCLUDE%""
+set "AMGER_DRIVER_FLAGS=/nologo /W4 /TC /GS /kernel /D_AMD64_=1 /DAMD64=1 /D_WIN64=1 /DNTDDI_VERSION=0x0A000000 /I"%AMGER_ROOT%\Shared" /I"%AMGER_KM_INCLUDE%" /I"%AMGER_SHARED_INCLUDE%" /I"%AMGER_UCRT_INCLUDE%""
 
 cl %AMGER_DRIVER_FLAGS% /c /Fo"%AMGER_OBJECTS%\DriverEntry.obj" "%AMGER_ROOT%\Driver\Initialization\Driver.c"
 if errorlevel 1 goto :Failed
-cl %AMGER_DRIVER_FLAGS% /c /Fo"%AMGER_OBJECTS%\Bootstrap.obj" "%AMGER_ROOT%\Driver\Initialization\Bootstrap.c"
+cl %AMGER_DRIVER_FLAGS% /c /Fo"%AMGER_OBJECTS%\Bootstrap.obj" "%AMGER_ROOT%\Driver\Initialization\Startup\Bootstrap.c"
 if errorlevel 1 goto :Failed
-cl %AMGER_DRIVER_FLAGS% /c /Fo"%AMGER_OBJECTS%\Bridge.obj" "%AMGER_ROOT%\Driver\Communication\Bridge.c"
+cl %AMGER_DRIVER_FLAGS% /c /Fo"%AMGER_OBJECTS%\Bridge.obj" "%AMGER_ROOT%\Driver\Communication\Endpoint\Bridge.c"
 if errorlevel 1 goto :Failed
-cl %AMGER_DRIVER_FLAGS% /c /Fo"%AMGER_OBJECTS%\Dispatcher.obj" "%AMGER_ROOT%\Driver\Communication\Dispatcher.c"
+cl %AMGER_DRIVER_FLAGS% /c /Fo"%AMGER_OBJECTS%\Dispatcher.obj" "%AMGER_ROOT%\Driver\Communication\Routing\Dispatcher.c"
 if errorlevel 1 goto :Failed
 cl %AMGER_DRIVER_FLAGS% /c /Fo"%AMGER_OBJECTS%\Guard.obj" "%AMGER_ROOT%\Driver\Utilities\Guard.c"
 if errorlevel 1 goto :Failed
 
-link /nologo /driver /subsystem:native /machine:x64 /entry:DriverEntry /nodefaultlib /release ^
+link /nologo /driver /subsystem:native /machine:x64 /entry:GsDriverEntry /nodefaultlib /release ^
     /out:"%AMGER_OUTPUT%\Driver.sys" ^
     "%AMGER_OBJECTS%\DriverEntry.obj" ^
     "%AMGER_OBJECTS%\Bootstrap.obj" ^
     "%AMGER_OBJECTS%\Bridge.obj" ^
     "%AMGER_OBJECTS%\Dispatcher.obj" ^
     "%AMGER_OBJECTS%\Guard.obj" ^
-    /libpath:"%AMGER_KM_LIB%" ntoskrnl.lib hal.lib
+    /libpath:"%AMGER_KM_LIB%" ntoskrnl.lib hal.lib wdmsec.lib BufferOverflowK.lib
 if errorlevel 1 goto :Failed
 
 echo [Ameger] Build complete.
