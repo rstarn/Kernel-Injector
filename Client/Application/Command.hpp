@@ -3,6 +3,9 @@
 /*
  * Command.hpp - argv translation for Client.exe.
  *
+ * The class keeps its historical "CommandLine" name from before the file was
+ * renamed to Command.hpp; callers use CommandLine::Process / ::PrintUsage.
+ *
  * Contract: converts the Phase 1 command line into an Configuration.
  * Inputs: standard wmain argc/argv.
  * Outputs: populated configuration returned by reference.

@@ -6,8 +6,8 @@
  * Inputs: wmain argc/argv; Phase 1 flags --ping, --connect-only,
  * --bootstrap-path.
  * Outputs: process exit code 0 on success, 1 on any failure.
- * Failure modes: a missing bootstrap file, an unopenable device, or a PING
- * timeout each produce exit code 1 with a diagnostic on stdout.
+ * Failure modes: a missing bootstrap file, an unopenable device, or a failed
+ * PING round-trip each produce exit code 1 with a diagnostic on stdout.
  */
 
 #include <Windows.h>
@@ -86,7 +86,7 @@ int wmain(int argc, wchar_t** argv) {
     client.Disconnect();
 
     if (!pingSucceeded) {
-        std::wcerr << L"[-] PING failed or timed out" << std::endl;
+        std::wcerr << L"[-] PING failed" << std::endl;
         return 1;
     }
 

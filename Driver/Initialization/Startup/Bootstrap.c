@@ -43,7 +43,6 @@ static WCHAR g_filePathBuffer[96];
 static volatile LONG g_linkCreated = 0;
 static volatile LONG g_fileCreated = 0;
 static BOOLEAN g_active = FALSE;
-static NTSTATUS g_lastCleanupStatus = STATUS_SUCCESS;
 
 /* Serializes file and symbolic-link deletion. All callers run at PASSIVE_LEVEL;
  * the mutex is held only around object-manager calls, never a spin lock, and a
@@ -190,7 +189,6 @@ static NTSTATUS WriteBootstrapFile(VOID) {
          * error and record any cleanup failure separately. */
         const NTSTATUS cleanupStatus = DeleteBootstrapFile();
         if (!NT_SUCCESS(cleanupStatus)) {
-            g_lastCleanupStatus = cleanupStatus;
             ReportLifecycleFailure(cleanupStatus);
         }
         return writeStatus;
@@ -249,7 +247,6 @@ NTSTATUS BootstrapInitialize(
         /* Preserve the link failure; record any device-deletion failure. */
         const NTSTATUS cleanupStatus = BootstrapDestroyDevice();
         if (!NT_SUCCESS(cleanupStatus)) {
-            g_lastCleanupStatus = cleanupStatus;
             ReportLifecycleFailure(cleanupStatus);
         }
         RtlZeroMemory(&g_deviceName, sizeof(g_deviceName));
@@ -263,7 +260,6 @@ NTSTATUS BootstrapInitialize(
         /* Preserve the original write failure; record cleanup failure. */
         const NTSTATUS cleanupStatus = BootstrapDestroy();
         if (!NT_SUCCESS(cleanupStatus)) {
-            g_lastCleanupStatus = cleanupStatus;
             ReportLifecycleFailure(cleanupStatus);
         }
         return status;
@@ -342,7 +338,6 @@ NTSTATUS BootstrapDestroy(VOID) {
     }
 
     finalStatus = NT_SUCCESS(discoveryStatus) ? deviceStatus : discoveryStatus;
-    g_lastCleanupStatus = finalStatus;
 
     KeReleaseMutex(&g_discoveryMutex, FALSE);
 
@@ -354,15 +349,6 @@ NTSTATUS BootstrapDestroy(VOID) {
 
 VOID BootstrapReportCleanupFailure(NTSTATUS status) {
     ReportLifecycleFailure(status);
-}
-
-NTSTATUS BootstrapGetLastCleanupStatus(VOID) {
-    NTSTATUS status;
-
-    KeWaitForSingleObject(&g_discoveryMutex, Executive, KernelMode, FALSE, NULL);
-    status = g_lastCleanupStatus;
-    KeReleaseMutex(&g_discoveryMutex, FALSE);
-    return status;
 }
 
 BOOLEAN BootstrapIsActive(VOID) {

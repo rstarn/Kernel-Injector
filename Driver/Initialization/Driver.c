@@ -1,5 +1,5 @@
 /*
- * InjectorDriver.sys entry point for Phase 1.
+ * Driver.sys entry point for Phase 1.
  *
  * Contract: create the one-shot secured bootstrap device, install the IOCTL
  * dispatch and unload routine, and return STATUS_SUCCESS. DriverEntry failure

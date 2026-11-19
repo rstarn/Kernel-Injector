@@ -44,7 +44,6 @@ static BOOLEAN g_connectionClosing = FALSE;
  * REGISTER or KICK may be admitted, even if BootstrapDestroy must be retried. */
 static BOOLEAN g_terminalShutdown = FALSE;
 static BOOLEAN g_bootstrapPending = FALSE;
-static NTSTATUS g_discoveryRemovalStatus = STATUS_SUCCESS;
 
 /* Bootstrap discovery state is shared by the KICK, CLOSE and unload paths.
  * These accessors serialize reads/writes with g_regionLock. The deletion work
@@ -72,19 +71,10 @@ static VOID RecordDiscoveryRemoval(NTSTATUS removalStatus) {
     KIRQL oldIrql;
 
     KeAcquireSpinLock(&g_regionLock, &oldIrql);
-    g_discoveryRemovalStatus = removalStatus;
+    /* Only a successful removal clears the pending marker; on failure a later
+     * KICK retries discovery removal. */
     if (NT_SUCCESS(removalStatus)) {
         g_bootstrapPending = FALSE;
-    }
-    KeReleaseSpinLock(&g_regionLock, oldIrql);
-}
-
-static VOID ReconcileDiscoveryStatus(NTSTATUS teardownStatus) {
-    KIRQL oldIrql;
-
-    KeAcquireSpinLock(&g_regionLock, &oldIrql);
-    if (!NT_SUCCESS(g_discoveryRemovalStatus) && NT_SUCCESS(teardownStatus)) {
-        g_discoveryRemovalStatus = STATUS_SUCCESS;
     }
     KeReleaseSpinLock(&g_regionLock, oldIrql);
 }
@@ -154,11 +144,6 @@ static NTSTATUS CloseDispatch(PDEVICE_OBJECT DeviceObject, PIRP Irp) {
         regionStatus = BridgeReleaseResources();
         destroyStatus = BootstrapDestroy();
         status = NT_SUCCESS(regionStatus) ? destroyStatus : regionStatus;
-
-        /* A discovery-removal failure recorded during KICK is resolved if the
-         * final teardown succeeded; otherwise it stays recorded for diagnosis.
-         * The read/modify/write of the shared status is synchronized. */
-        ReconcileDiscoveryStatus(destroyStatus);
 
         return CompleteIrp(Irp, status, 0u);
     }

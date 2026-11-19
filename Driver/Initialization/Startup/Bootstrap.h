@@ -55,14 +55,6 @@ NTSTATUS BootstrapDestroy(VOID);
 VOID BootstrapReportCleanupFailure(NTSTATUS status);
 
 /*
- * Contract: reports the most recent cleanup failure for in-memory diagnosis
- * without overwriting the original initialization or teardown status.
- * Inputs: none. Outputs: last cleanup NTSTATUS, STATUS_SUCCESS when clean.
- * Failure modes: none.
- */
-NTSTATUS BootstrapGetLastCleanupStatus(VOID);
-
-/*
  * Contract: reports whether bootstrap initialization completed.
  * Inputs: none. Outputs: TRUE before destruction, FALSE afterwards.
  * Failure modes: none.
