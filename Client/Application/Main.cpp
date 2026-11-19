@@ -21,8 +21,13 @@
 namespace {
 
 bool FileExists(const std::wstring& path) {
-    return !path.empty() &&
-           GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES;
+    if (path.empty()) {
+        return false;
+    }
+
+    const DWORD attributes = GetFileAttributesW(path.c_str());
+    return attributes != INVALID_FILE_ATTRIBUTES &&
+           (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0u;
 }
 
 /* The driver writes to the system temp directory because kernel mode cannot

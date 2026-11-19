@@ -7,6 +7,8 @@ rem Usage: Build.bat [BUILD | CLEAN | REBUILD]
 rem Outputs:
 rem   Build\Output\Client.exe
 rem   Build\Output\Driver.sys
+rem CLEAN/REBUILD remove only these build outputs (plus Build\Objects); every
+rem other file in Build\Output (crash dumps, reports, analysis logs) is kept.
 rem ===========================================================================
 
 set "AMGER_ROOT=%~dp0.."
@@ -24,13 +26,18 @@ echo Usage: Build.bat [BUILD ^| CLEAN ^| REBUILD]
 exit /b 1
 
 :Clean
-if exist "%AMGER_OUTPUT%" rmdir /s /q "%AMGER_OUTPUT%"
+rem Build outputs only; Build\Output itself and any other files in it are kept.
+if exist "%AMGER_OUTPUT%\Client.exe" del /q "%AMGER_OUTPUT%\Client.exe"
+if exist "%AMGER_OUTPUT%\Driver.sys" del /q "%AMGER_OUTPUT%\Driver.sys"
+if exist "%AMGER_OUTPUT%\Client.exe.manifest" del /q "%AMGER_OUTPUT%\Client.exe.manifest"
 if exist "%AMGER_OBJECTS%" rmdir /s /q "%AMGER_OBJECTS%"
 echo [Ameger] Clean complete.
 exit /b 0
 
 :Rebuild
-if exist "%AMGER_OUTPUT%" rmdir /s /q "%AMGER_OUTPUT%"
+if exist "%AMGER_OUTPUT%\Client.exe" del /q "%AMGER_OUTPUT%\Client.exe"
+if exist "%AMGER_OUTPUT%\Driver.sys" del /q "%AMGER_OUTPUT%\Driver.sys"
+if exist "%AMGER_OUTPUT%\Client.exe.manifest" del /q "%AMGER_OUTPUT%\Client.exe.manifest"
 if exist "%AMGER_OBJECTS%" rmdir /s /q "%AMGER_OBJECTS%"
 
 :Build
@@ -51,10 +58,20 @@ if not defined AMGER_VCVARS (
     )
 )
 if not defined AMGER_VCVARS (
-    echo [Ameger] ERROR: vcvars64.bat not found. Install Visual Studio 2022 Desktop C++ build tools.
+    echo [Ameger] ERROR: vcvars64.bat not found. Install Visual Studio Build Tools with the v145 C++ toolset.
     exit /b 1
 )
 call "%AMGER_VCVARS%" >nul 2>&1
+if errorlevel 1 (
+    echo [Ameger] ERROR: Visual Studio environment initialization failed.
+    exit /b 1
+)
+where cl.exe >nul 2>&1
+if errorlevel 1 goto :Failed
+where link.exe >nul 2>&1
+if errorlevel 1 goto :Failed
+where mt.exe >nul 2>&1
+if errorlevel 1 goto :Failed
 
 rem --- Locate the newest installed WDK ---------------------------------------
 set "AMGER_WDK_VERSION="
@@ -71,6 +88,11 @@ set "AMGER_SHARED_INCLUDE=C:\Program Files (x86)\Windows Kits\10\Include\%AMGER_
 set "AMGER_UCRT_INCLUDE=C:\Program Files (x86)\Windows Kits\10\Include\%AMGER_WDK_VERSION%\ucrt"
 set "AMGER_KM_LIB=C:\Program Files (x86)\Windows Kits\10\Lib\%AMGER_WDK_VERSION%\km\x64"
 
+if not exist "%AMGER_KM_INCLUDE%\ntddk.h" goto :WdkMissing
+if not exist "%AMGER_SHARED_INCLUDE%\ntdef.h" goto :WdkMissing
+if not exist "%AMGER_UCRT_INCLUDE%\stdio.h" goto :WdkMissing
+if not exist "%AMGER_KM_LIB%\ntoskrnl.lib" goto :WdkMissing
+
 echo [Ameger] WDK %AMGER_WDK_VERSION%
 
 rem --- Client.exe ------------------------------------------------------------
@@ -85,6 +107,8 @@ if errorlevel 1 goto :Failed
 cl %AMGER_CLIENT_FLAGS% /c /Fo"%AMGER_OBJECTS%\Channel.obj" "%AMGER_ROOT%\Client\Transport\Channel.cpp"
 if errorlevel 1 goto :Failed
 
+rem Drop any stale binary first so a failed link cannot leave it looking fresh.
+if exist "%AMGER_OUTPUT%\Client.exe" del /q "%AMGER_OUTPUT%\Client.exe"
 rem Disable linker manifest generation so no sidecar is written to Build\Output.
 link /nologo /subsystem:console /machine:x64 /manifest:no /out:"%AMGER_OUTPUT%\Client.exe" ^
     "%AMGER_OBJECTS%\Main.obj" ^
@@ -115,6 +139,9 @@ if errorlevel 1 goto :Failed
 cl %AMGER_DRIVER_FLAGS% /c /Fo"%AMGER_OBJECTS%\Guard.obj" "%AMGER_ROOT%\Driver\Utilities\Guard.c"
 if errorlevel 1 goto :Failed
 
+rem Drop any stale binary first so a failed link cannot leave it looking fresh.
+if exist "%AMGER_OUTPUT%\Driver.sys" del /q "%AMGER_OUTPUT%\Driver.sys"
+rem INIT holds the entry point and import descriptors; the mapper must map all sections.
 link /nologo /driver /subsystem:native /machine:x64 /entry:GsDriverEntry /nodefaultlib /release ^
     /out:"%AMGER_OUTPUT%\Driver.sys" ^
     "%AMGER_OBJECTS%\DriverEntry.obj" ^
@@ -122,12 +149,16 @@ link /nologo /driver /subsystem:native /machine:x64 /entry:GsDriverEntry /nodefa
     "%AMGER_OBJECTS%\Bridge.obj" ^
     "%AMGER_OBJECTS%\Dispatcher.obj" ^
     "%AMGER_OBJECTS%\Guard.obj" ^
-    /libpath:"%AMGER_KM_LIB%" ntoskrnl.lib hal.lib wdmsec.lib BufferOverflowK.lib
+    /libpath:"%AMGER_KM_LIB%" ntoskrnl.lib hal.lib BufferOverflowK.lib
 if errorlevel 1 goto :Failed
 
 echo [Ameger] Build complete.
 dir "%AMGER_OUTPUT%"
 exit /b 0
+
+:WdkMissing
+echo [Ameger] ERROR: WDK %AMGER_WDK_VERSION% is incomplete (headers or x64 kernel libraries missing).
+exit /b 1
 
 :Failed
 echo [Ameger] BUILD FAILED.

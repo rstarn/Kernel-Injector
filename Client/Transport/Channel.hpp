@@ -14,6 +14,7 @@
  */
 
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <Windows.h>
 
@@ -35,7 +36,9 @@ private:
     static bool ReadBootstrapPath(const std::wstring& bootstrapPath, std::wstring& devicePath);
     static void WriteCommand(volatile AMGER_COMMAND_HEADER* header, uint32_t command);
     static uint32_t ReadFinalStatus(volatile AMGER_COMMAND_HEADER* header);
+    void DisconnectUnlocked();
 
+    std::mutex operationMutex;
     HANDLE deviceHandle;
     void* sharedRegion;
     volatile AMGER_COMMAND_HEADER* header;

@@ -32,6 +32,7 @@ typedef struct _AMGER_STATUS_WRITE_CONTEXT {
 } AMGER_STATUS_WRITE_CONTEXT, * PAMGER_STATUS_WRITE_CONTEXT;
 
 static KSPIN_LOCK g_regionLock;
+static KMUTEX g_commandMutex;
 static AMGER_REGION_STATE g_regionState = RegionStateUnregistered;
 static volatile LONG g_activeOperations = 0;
 static PMDL g_sharedMdl = NULL;
@@ -158,8 +159,11 @@ static BOOLEAN RegionBeginRegistration(PFILE_OBJECT FileObject) {
     KeAcquireSpinLock(&g_regionLock, &oldIrql);
     /* CLEANUP sets g_connectionClosing under this same lock. Once set, no new
      * registration is accepted for the closing connection, before any MDL is
-     * allocated or any user pages are probed. */
-    accepted = (!g_terminalShutdown &&
+     * allocated or any user pages are probed. A registration without a file
+     * object would own a region that no CLEANUP/CLOSE could ever match, so it
+     * is rejected here. */
+    accepted = (FileObject != NULL &&
+                !g_terminalShutdown &&
                 !g_connectionClosing &&
                 g_regionState == RegionStateUnregistered);
     if (accepted) {
@@ -360,6 +364,7 @@ NTSTATUS BridgeRegisterIoControl(
     }
 
     KeInitializeSpinLock(&g_regionLock);
+    KeInitializeMutex(&g_commandMutex, 0);
     DriverObject->MajorFunction[IRP_MJ_CREATE] = DefaultDispatch;
     DriverObject->MajorFunction[IRP_MJ_CLEANUP] = CleanupDispatch;
     DriverObject->MajorFunction[IRP_MJ_CLOSE] = CloseDispatch;
@@ -395,7 +400,27 @@ static NTSTATUS ReleaseRegion(BOOLEAN ClearOwner, BOOLEAN BoundedWait) {
     LARGE_INTEGER interval;
     ULONG waitCount;
 
+    NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+
+    interval.QuadPart = -10000LL; /* 1 ms */
+
     KeAcquireSpinLock(&g_regionLock, &oldIrql);
+    while (g_regionState == RegionStateRegistering) {
+        if (BoundedWait) {
+            /* CLEANUP keeps its bounded contract: report busy and let the
+             * worker finish; CLOSE / unload reclaim the region afterwards. */
+            KeReleaseSpinLock(&g_regionLock, oldIrql);
+            return STATUS_DEVICE_BUSY;
+        }
+        /* Unbounded path (CLOSE / unload). Proceeding now would let the caller
+         * delete the device while a registration worker still holds a
+         * temporary MDL, so wait out the worker. This runs at PASSIVE_LEVEL
+         * and never holds the spin lock while sleeping. */
+        KeReleaseSpinLock(&g_regionLock, oldIrql);
+        KeDelayExecutionThread(KernelMode, FALSE, &interval);
+        KeAcquireSpinLock(&g_regionLock, &oldIrql);
+    }
+
     previous = g_regionState;
     if (previous == RegionStateUnregistered) {
         /* Nothing is mapped, but CLOSE/unload still owns the connection state.
@@ -409,10 +434,6 @@ static NTSTATUS ReleaseRegion(BOOLEAN ClearOwner, BOOLEAN BoundedWait) {
         KeReleaseSpinLock(&g_regionLock, oldIrql);
         return STATUS_SUCCESS;
     }
-    if (previous == RegionStateRegistering) {
-        KeReleaseSpinLock(&g_regionLock, oldIrql);
-        return STATUS_DEVICE_BUSY;
-    }
 
     /* Registered or Closing both proceed: Closing means a previous CLEANUP
      * timed out while an operation still held a reference, and this call is
@@ -421,7 +442,6 @@ static NTSTATUS ReleaseRegion(BOOLEAN ClearOwner, BOOLEAN BoundedWait) {
     KeReleaseSpinLock(&g_regionLock, oldIrql);
 
     waitCount = 0u;
-    interval.QuadPart = -10000LL; /* 1 ms */
     while (InterlockedCompareExchange(&g_activeOperations, 0L, 0L) != 0L) {
         if (BoundedWait && waitCount >= 1000u) {
             /* Keep Closing and the MDL intact. CLOSE / unload will retry after
@@ -517,7 +537,7 @@ NTSTATUS BridgeDispatch(PDEVICE_OBJECT DeviceObject, PIRP Irp) {
         AMGER_REGISTRATION_CONTEXT context;
         NTSTATUS status;
 
-        if (stack->Parameters.DeviceIoControl.InputBufferLength <
+        if (stack->Parameters.DeviceIoControl.InputBufferLength !=
                 sizeof(AMGER_SHARED_REGION_REQUEST) ||
             stack->Parameters.DeviceIoControl.OutputBufferLength != 0u ||
             Irp->AssociatedIrp.SystemBuffer == NULL) {
@@ -569,6 +589,17 @@ NTSTATUS BridgeDispatch(PDEVICE_OBJECT DeviceObject, PIRP Irp) {
             return CompleteIrp(Irp, STATUS_INVALID_DEVICE_STATE, 0u);
         }
 
+        /* A single shared command slot cannot safely serve concurrent KICKs.
+         * Serialize snapshot, dispatch and status publication at PASSIVE_LEVEL.
+         * The active-operation reference remains held while waiting, so CLEANUP
+         * cannot release the MDL underneath a queued command. */
+        status = KeWaitForSingleObject(
+            &g_commandMutex, Executive, KernelMode, FALSE, NULL);
+        if (!NT_SUCCESS(status)) {
+            RegionEndOperation();
+            return CompleteIrp(Irp, status, 0u);
+        }
+
         context.Header = header;
         context.Status = AMGER_STATUS_PENDING;
         status = GuardExecute(KickWorker, &context);
@@ -582,6 +613,7 @@ NTSTATUS BridgeDispatch(PDEVICE_OBJECT DeviceObject, PIRP Irp) {
                                   ? context.Status
                                   : (uint32_t)status;
         writeStatus = GuardExecute(WriteStatusWorker, &writeContext);
+        KeReleaseMutex(&g_commandMutex, FALSE);
 
         RegionEndOperation();
 

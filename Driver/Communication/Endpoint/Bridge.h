@@ -6,7 +6,8 @@
  *
  * Contract: one shared region may be registered at a time. Registration is
  * serialized by a state machine; KICK holds a reference until command
- * processing finishes. MDL resources are released by BridgeCleanupConnection
+ * processing finishes, and a mutex serializes use of the single command slot.
+ * MDL resources are released by BridgeCleanupConnection
  * (CLEANUP) and BridgeReleaseResources (CLOSE / unload).
  * Inputs: DriverObject/DeviceObject at setup; IRPs at dispatch.
  * Outputs: NTSTATUS from setup and from each completed IRP.
@@ -51,9 +52,11 @@ NTSTATUS BridgeBeginShutdown(VOID);
  * Contract: idempotently releases the registered MDL, unlocks its pages and
  * clears all ownership state. Safe before any registration and after release.
  * Used by CLOSE and unload, which run after outstanding IRPs have completed.
- * Inputs: none. Outputs: STATUS_SUCCESS, or STATUS_DEVICE_BUSY if called while
- * a registration is in progress. Failure modes: no resource is left referenced
- * after a successful return.
+ * A registration still in progress is waited out (1 ms polling at
+ * PASSIVE_LEVEL) before the region is released, so the device cannot be
+ * deleted underneath the registration worker.
+ * Inputs: none. Outputs: STATUS_SUCCESS. Failure modes: no resource is left
+ * referenced after a successful return.
  */
 NTSTATUS BridgeReleaseResources(VOID);
 

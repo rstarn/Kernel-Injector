@@ -1,18 +1,52 @@
-    #include <ntddk.h>
-#include <ntiologc.h>
-#include <wdmsec.h>
+/*
+ * Bootstrap.c - genuine driver object, one-shot GUID device, discovery file.
+ *
+ * Contract: the mapper-supplied DRIVER_OBJECT is never dereferenced. The
+ * object handed to DriverEntry is fabricated by the loader stub and has an
+ * invalid OBJECT_HEADER, so passing it to IoCreateDevice (which references the
+ * driver object) faults inside ObfReferenceObject. BootstrapInitialize instead
+ * calls IoCreateDriver(NULL, BootstrapCreateDriver), which returns an
+ * object-manager-owned DRIVER_OBJECT with a valid OBJECT_HEADER, an allocated
+ * DriverExtension and every MajorFunction[] entry pre-filled with
+ * IopInvalidDeviceRequest. All kernel calls use that object. The single
+ * reference IoCreateDriver returns is released only by
+ * BootstrapReleaseDriverObject, and only after the device object (whose
+ * creation took its own reference) has been deleted.
+ */
+
+#include <ntifs.h>
 
 #include "Bootstrap.h"
 
 #include "../../../Shared/Protocol.h"
 
-/* Project-owned device class GUID used by IoCreateDeviceSecure. */
-static const GUID AMGER_DEVICE_CLASS_GUID = {
-    0x7f5a2b14, 0x9c3e, 0x4d8a, { 0xb6, 0xf1, 0x0e, 0x2d, 0x4a, 0x8c, 0x9b, 0x73 }
-};
+/* IoCreateDriver is documented (wdm.h) and exported by ntoskrnl.lib, but the
+ * installed WDK header set does not declare it. The documented prototype is
+ * repeated here so the call is type-checked; the link proves the export. */
+NTKERNELAPI
+NTSTATUS
+IoCreateDriver(
+    _In_opt_ PUNICODE_STRING DriverName,
+    _In_ PDRIVER_INITIALIZE InitializationFunction
+    );
 
-/* SYSTEM and Builtin Administrators only; the client runs elevated. */
-#define AMGER_DEVICE_SDDL L"D:P(A;;GA;;;SY)(A;;GA;;;BA)"
+/* ObSetSecurityObjectByPointer is documented and exported by ntoskrnl.lib but
+ * the installed WDK header set does not declare it. The documented prototype
+ * is repeated here so the call is type-checked; the link proves the export. */
+NTKERNELAPI
+NTSTATUS
+ObSetSecurityObjectByPointer(
+    PVOID Object,
+    SECURITY_INFORMATION SecurityInformation,
+    PSECURITY_DESCRIPTOR SecurityDescriptor
+    );
+
+/* The device is created with IoCreateDevice (not wdmsec.lib's
+ * IoCreateDeviceSecure). wdmsec resolves a driver's service/registry state
+ * through APIs that assume a normally loaded driver; that path faults for a
+ * manually mapped image. The device DACL is therefore applied explicitly after
+ * creation (see ApplyDeviceSecurity), so access never depends on the default
+ * DACL inherited from the token the mapper happened to run under. */
 
 /* Use the WDK-defined IO_ERR_DRIVER_ERROR for lifecycle cleanup failures.
  * Its message ("Driver detected an internal error in its data structures
@@ -27,9 +61,6 @@ C_ASSERT(IO_ERR_DRIVER_ERROR == (NTSTATUS)0xC0040004L);
  * IoAllocateErrorLogEntry must fit in UCHAR. */
 #define AMGER_ERROR_LOG_SIZE_MAX 0xFFu
 
-/* ZwDeleteFile is declared in ntifs.h, which cannot coexist with wdm.h here.
- * On x64 NTAPI (__stdcall) has no ABI effect, so this matches the WDK signature. */
-NTSTATUS ZwDeleteFile(POBJECT_ATTRIBUTES ObjectAttributes);
 
 static PDRIVER_OBJECT g_driverObject = NULL;
 static PDEVICE_OBJECT g_deviceObject = NULL;
@@ -50,11 +81,23 @@ static BOOLEAN g_active = FALSE;
  * "deletion in progress" across concurrent KICK / CLOSE / unload teardown. */
 static KMUTEX g_discoveryMutex;
 
+/* TRUE only once KeInitializeMutex has run. DriverEntry can fail before
+ * BootstrapInitialize reaches that call (null output pointer), and a mapper may
+ * still invoke DriverUnload afterwards, so every mutex user checks this flag
+ * first instead of waiting on uninitialized mutex storage. */
+static BOOLEAN g_discoveryReady = FALSE;
+
 static VOID ReportLifecycleFailure(NTSTATUS status) {
     const ULONG dumpDataSize = sizeof(ULONG);
     const SIZE_T allocationSize = sizeof(IO_ERROR_LOG_PACKET) + dumpDataSize;
     UCHAR entrySize;
     PIO_ERROR_LOG_PACKET packet;
+
+    /* A late teardown failure can run after both objects are gone. The error
+     * log API requires a real object, so report nothing rather than NULL. */
+    if (g_driverObject == NULL && g_deviceObject == NULL) {
+        return;
+    }
 
     if (allocationSize > (SIZE_T)ERROR_LOG_MAXIMUM_SIZE ||
         allocationSize > (SIZE_T)AMGER_ERROR_LOG_SIZE_MAX) {
@@ -111,6 +154,99 @@ static VOID ComposeName(WCHAR* destination, const WCHAR* prefix, const WCHAR* he
     destination[position] = L'\0';
 }
 
+static NTSTATUS InitializeBootstrapSecurity(
+    PISECURITY_DESCRIPTOR SecurityDescriptor,
+    PACL Acl,
+    ULONG AclSize,
+    PSID SystemSid,
+    PSID AdministratorsSid,
+    ACCESS_MASK SystemAccess,
+    ACCESS_MASK AdministratorsAccess) {
+    SID_IDENTIFIER_AUTHORITY ntAuthority = {{0u, 0u, 0u, 0u, 0u, 5u}};
+    NTSTATUS status;
+
+    status = RtlInitializeSid(SystemSid, &ntAuthority, 1u);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+    *RtlSubAuthoritySid(SystemSid, 0u) = 18u; /* SECURITY_LOCAL_SYSTEM_RID */
+
+    status = RtlInitializeSid(AdministratorsSid, &ntAuthority, 2u);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+    *RtlSubAuthoritySid(AdministratorsSid, 0u) = 32u;  /* BUILTIN domain */
+    *RtlSubAuthoritySid(AdministratorsSid, 1u) = 544u; /* Administrators */
+
+    status = RtlCreateAcl(Acl, AclSize, ACL_REVISION);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
+    /* Two ACEs only: SYSTEM and Builtin Administrators. Every other principal,
+     * including any token the loader happened to run under, receives no ACE and
+     * is therefore denied access by the default-deny DACL semantics. */
+    status = RtlAddAccessAllowedAce(
+        Acl, ACL_REVISION, SystemAccess, SystemSid);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+    status = RtlAddAccessAllowedAce(
+        Acl, ACL_REVISION, AdministratorsAccess, AdministratorsSid);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
+    status = RtlCreateSecurityDescriptor(
+        SecurityDescriptor, SECURITY_DESCRIPTOR_REVISION);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
+    status = RtlSetDaclSecurityDescriptor(
+        SecurityDescriptor, TRUE, Acl, FALSE);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
+    /* SE_DACL_PROTECTED is applied after the file is created, with
+     * ZwSetSecurityObject(PROTECTED_DACL_SECURITY_INFORMATION). In kernel mode
+     * PISECURITY_DESCRIPTOR is opaque (PVOID), so its Control field must not be
+     * dereferenced directly. */
+    return STATUS_SUCCESS;
+}
+
+/* Applies the explicit device DACL. Both principals receive FILE_ALL_ACCESS:
+ * the driver opens its own device as SYSTEM, and the elevated client opens it
+ * with GENERIC_READ|GENERIC_WRITE. No ACE is granted to anyone else, so the
+ * device is no longer reachable through the default DACL of the loader token.
+ * The descriptor is absolute and stack-resident; ObSetSecurityObjectByPointer
+ * copies it into the object header before returning. */
+static NTSTATUS ApplyDeviceSecurity(PDEVICE_OBJECT DeviceObject) {
+    DECLSPEC_ALIGN(4) UCHAR aclStorage[128];
+    DECLSPEC_ALIGN(4) UCHAR systemSidStorage[
+        FIELD_OFFSET(SID, SubAuthority) + sizeof(ULONG)];
+    DECLSPEC_ALIGN(4) UCHAR administratorsSidStorage[
+        FIELD_OFFSET(SID, SubAuthority) + (2u * sizeof(ULONG))];
+    SECURITY_DESCRIPTOR securityDescriptor;
+    NTSTATUS status;
+
+    status = InitializeBootstrapSecurity(
+        &securityDescriptor,
+        (PACL)aclStorage,
+        sizeof(aclStorage),
+        (PSID)systemSidStorage,
+        (PSID)administratorsSidStorage,
+        FILE_ALL_ACCESS,
+        FILE_ALL_ACCESS);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
+    return ObSetSecurityObjectByPointer(
+        DeviceObject, DACL_SECURITY_INFORMATION, &securityDescriptor);
+}
+
 static NTSTATUS DeleteBootstrapFile(VOID) {
     if (InterlockedCompareExchange(&g_fileCreated, 0L, 1L) != 1L) {
         /* No file is owned; the resource is already absent. */
@@ -140,6 +276,16 @@ static NTSTATUS DeleteBootstrapFile(VOID) {
 static NTSTATUS WriteBootstrapFile(VOID) {
     static const WCHAR systemTempPath[] =
         L"\\SystemRoot\\Temp\\AmegerBootstrap.txt";
+    DECLSPEC_ALIGN(4) UCHAR aclStorage[128];
+    DECLSPEC_ALIGN(4) UCHAR systemSidStorage[
+        FIELD_OFFSET(SID, SubAuthority) + sizeof(ULONG)];
+    DECLSPEC_ALIGN(4) UCHAR administratorsSidStorage[
+        FIELD_OFFSET(SID, SubAuthority) + (2u * sizeof(ULONG))];
+    SECURITY_DESCRIPTOR securityDescriptor;
+    OBJECT_ATTRIBUTES attributes;
+    HANDLE fileHandle = NULL;
+    IO_STATUS_BLOCK ioStatus;
+    NTSTATUS status;
 
     ULONG position = 0u;
     while (systemTempPath[position] != L'\0') {
@@ -149,71 +295,116 @@ static NTSTATUS WriteBootstrapFile(VOID) {
     g_filePathBuffer[position] = L'\0';
     RtlInitUnicodeString(&g_bootstrapFilePath, g_filePathBuffer);
 
-    OBJECT_ATTRIBUTES attributes;
+    status = InitializeBootstrapSecurity(
+        &securityDescriptor,
+        (PACL)aclStorage,
+        sizeof(aclStorage),
+        (PSID)systemSidStorage,
+        (PSID)administratorsSidStorage,
+        /* The driver must create, write, delete, and reset security on the
+         * locator file, so SYSTEM receives full control. The driver is not
+         * necessarily SYSTEM, however: a manually mapped image executes in
+         * Mapper.exe's thread and token context, which is normally an elevated
+         * Administrator. The create-time access check runs against the SD being
+         * assigned, so granting Administrators only read access would fail the
+         * create (and the later ZwDeleteFile) with STATUS_ACCESS_DENIED. Both
+         * principals therefore receive full control; untrusted principals still
+         * get no ACE and are denied by the default-deny DACL semantics. */
+        FILE_ALL_ACCESS,
+        FILE_ALL_ACCESS);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
     InitializeObjectAttributes(&attributes, &g_bootstrapFilePath,
                                OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE,
-                               NULL, NULL);
+                               NULL, &securityDescriptor);
 
-    HANDLE fileHandle = NULL;
-    IO_STATUS_BLOCK ioStatus;
-    const NTSTATUS createStatus = ZwCreateFile(
+    status = ZwCreateFile(
         &fileHandle,
-        FILE_WRITE_DATA,
+        FILE_WRITE_DATA | DELETE | WRITE_DAC | SYNCHRONIZE,
         &attributes,
         &ioStatus,
         NULL,
         FILE_ATTRIBUTE_NORMAL,
         FILE_SHARE_READ,
-        FILE_OVERWRITE_IF,
-        FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE,
+        FILE_SUPERSEDE,
+        FILE_SYNCHRONOUS_IO_NONALERT |
+            FILE_NON_DIRECTORY_FILE |
+            FILE_OPEN_REPARSE_POINT,
         NULL,
         0u);
 
-    if (!NT_SUCCESS(createStatus)) {
-        return createStatus;
+    if (!NT_SUCCESS(status)) {
+        return status;
     }
 
     /* Creation succeeded: record ownership before attempting the write. */
     InterlockedExchange(&g_fileCreated, 1L);
 
+    /* Apply the restrictive DACL with inheritance disabled. The explicit SD
+     * passed to ZwCreateFile supplies the ACL; this sets SE_DACL_PROTECTED so
+     * inheritable ACEs from the shared Temp directory are not merged in. */
+    status = ZwSetSecurityObject(
+        fileHandle,
+        DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+        &securityDescriptor);
+    if (!NT_SUCCESS(status)) {
+        ZwClose(fileHandle);
+        const NTSTATUS cleanupStatus = DeleteBootstrapFile();
+        if (!NT_SUCCESS(cleanupStatus)) {
+            ReportLifecycleFailure(cleanupStatus);
+        }
+        return status;
+    }
+
     const ULONG byteCount =
         (ULONG)((wcslen(g_userPathBuffer) + 1u) * sizeof(WCHAR));
-    const NTSTATUS writeStatus = ZwWriteFile(
+    status = ZwWriteFile(
         fileHandle, NULL, NULL, NULL, &ioStatus,
         g_userPathBuffer, byteCount, NULL, NULL);
 
+    if (NT_SUCCESS(status) && ioStatus.Information != byteCount) {
+        status = STATUS_DEVICE_DATA_ERROR;
+    }
+
     ZwClose(fileHandle);
 
-    if (!NT_SUCCESS(writeStatus)) {
+    if (!NT_SUCCESS(status)) {
         /* Attempt to remove the partially written file; preserve the write
          * error and record any cleanup failure separately. */
         const NTSTATUS cleanupStatus = DeleteBootstrapFile();
         if (!NT_SUCCESS(cleanupStatus)) {
             ReportLifecycleFailure(cleanupStatus);
         }
-        return writeStatus;
+        return status;
     }
 
     return STATUS_SUCCESS;
 }
 
-NTSTATUS BootstrapInitialize(
+/* Runs inside IoCreateDriver with the genuine, object-manager-owned driver
+ * object. Failure returns hand the object back to IoCreateDriver, which owns
+ * cleanup: this callback must never call ObDereferenceObject on it. Bootstrap
+ * resources that were already created are unwound here so the caller sees a
+ * clean slate. */
+static NTSTATUS BootstrapCreateDriver(
     PDRIVER_OBJECT DriverObject,
-    PDEVICE_OBJECT* OutDeviceObject) {
-    if (OutDeviceObject == NULL) {
-        return STATUS_INVALID_PARAMETER;
-    }
-    *OutDeviceObject = NULL;
-    KeInitializeMutex(&g_discoveryMutex, 0);
+    PUNICODE_STRING RegistryPath) {
+    GUID guid;
+    NTSTATUS status;
+    WCHAR hexBuffer[AMGER_GUID_HEX_LENGTH + 1u];
+
+    NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+    UNREFERENCED_PARAMETER(RegistryPath);
+
     g_driverObject = DriverObject;
 
-    GUID guid;
-    NTSTATUS status = ExUuidCreate(&guid);
+    status = ExUuidCreate(&guid);
     if (!NT_SUCCESS(status)) {
         return status;
     }
 
-    WCHAR hexBuffer[AMGER_GUID_HEX_LENGTH + 1u];
     GuidToHex(&guid, hexBuffer);
 
     ComposeName(g_deviceNameBuffer, AMGER_DEVICE_NAME_PREFIX, hexBuffer);
@@ -223,20 +414,25 @@ NTSTATUS BootstrapInitialize(
     RtlInitUnicodeString(&g_deviceName, g_deviceNameBuffer);
     RtlInitUnicodeString(&g_symbolicLinkName, g_symbolicLinkNameBuffer);
 
-    UNICODE_STRING sddl;
-    RtlInitUnicodeString(&sddl, AMGER_DEVICE_SDDL);
-
-    status = IoCreateDeviceSecure(
+    status = IoCreateDevice(
         DriverObject,
         0u,
         &g_deviceName,
         FILE_DEVICE_UNKNOWN,
         FILE_DEVICE_SECURE_OPEN,
         FALSE,
-        &sddl,
-        &AMGER_DEVICE_CLASS_GUID,
         &g_deviceObject);
     if (!NT_SUCCESS(status)) {
+        RtlZeroMemory(&g_deviceName, sizeof(g_deviceName));
+        RtlZeroMemory(&g_symbolicLinkName, sizeof(g_symbolicLinkName));
+        return status;
+    }
+
+    /* The device is published to user mode, so its DACL is fixed before the
+     * symbolic link exposes it. A failure here leaves no name to reach it. */
+    status = ApplyDeviceSecurity(g_deviceObject);
+    if (!NT_SUCCESS(status)) {
+        (void)BootstrapDestroyDevice();
         RtlZeroMemory(&g_deviceName, sizeof(g_deviceName));
         RtlZeroMemory(&g_symbolicLinkName, sizeof(g_symbolicLinkName));
         return status;
@@ -257,17 +453,59 @@ NTSTATUS BootstrapInitialize(
 
     status = WriteBootstrapFile();
     if (!NT_SUCCESS(status)) {
-        /* Preserve the original write failure; record cleanup failure. */
-        const NTSTATUS cleanupStatus = BootstrapDestroy();
-        if (!NT_SUCCESS(cleanupStatus)) {
-            ReportLifecycleFailure(cleanupStatus);
-        }
+        /* Preserve the original write failure. BootstrapDestroy reports its own
+         * cleanup failure to the error log, so reporting it again here would
+         * duplicate the entry for the same status. */
+        (void)BootstrapDestroy();
         return status;
     }
 
     g_active = TRUE;
-    *OutDeviceObject = g_deviceObject;
     return STATUS_SUCCESS;
+}
+
+NTSTATUS BootstrapInitialize(
+    PDEVICE_OBJECT* OutDeviceObject,
+    PDRIVER_OBJECT* OutDriverObject) {
+    NTSTATUS status;
+
+    if (OutDeviceObject == NULL || OutDriverObject == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    *OutDeviceObject = NULL;
+    *OutDriverObject = NULL;
+
+    KeInitializeMutex(&g_discoveryMutex, 0);
+    g_discoveryReady = TRUE;
+
+    /* Creates a genuine driver object and runs BootstrapCreateDriver against
+     * it. The driver object is created unnamed: the device and symbolic link
+     * carry the discoverable GUID name. */
+    status = IoCreateDriver(NULL, BootstrapCreateDriver);
+    if (!NT_SUCCESS(status)) {
+        /* IoCreateDriver has already deleted the driver object it created and
+         * the callback unwound its own bootstrap resources, so the pointer
+         * held in g_driverObject is stale: never dereference or release it. */
+        g_driverObject = NULL;
+        return status;
+    }
+
+    *OutDeviceObject = g_deviceObject;
+    *OutDriverObject = g_driverObject;
+    return STATUS_SUCCESS;
+}
+
+VOID BootstrapReleaseDriverObject(VOID) {
+    PDRIVER_OBJECT driver = (PDRIVER_OBJECT)InterlockedExchangePointer(
+        (PVOID*)&g_driverObject, NULL);
+
+    if (driver != NULL) {
+        /* Drops the single reference IoCreateDriver returned to us. Callers
+         * must have deleted the device object first: its creation took its own
+         * reference on the driver object. Idempotent because the claim above
+         * leaves NULL behind. */
+        ObDereferenceObject(driver);
+    }
 }
 
 /* Removes the bootstrap file and symbolic link. g_discoveryMutex must be held
@@ -296,6 +534,11 @@ static NTSTATUS RemoveDiscoveryLocked(VOID) {
 NTSTATUS BootstrapRemoveDiscovery(VOID) {
     NTSTATUS status;
 
+    /* Nothing was initialized, so there is nothing to remove. */
+    if (!g_discoveryReady) {
+        return STATUS_SUCCESS;
+    }
+
     /* Serialize with any concurrent CLOSE / unload teardown. The object-manager
      * calls run at PASSIVE_LEVEL under a mutex, never under g_regionLock. */
     KeWaitForSingleObject(&g_discoveryMutex, Executive, KernelMode, FALSE, NULL);
@@ -322,6 +565,13 @@ NTSTATUS BootstrapDestroy(VOID) {
     NTSTATUS deviceStatus;
     NTSTATUS finalStatus;
     BOOLEAN complete;
+
+    /* Uninitialized mutex storage must never be waited on. A failed
+     * BootstrapInitialize (or a DriverEntry that never reached it) leaves no
+     * bootstrap resource to tear down. */
+    if (!g_discoveryReady) {
+        return STATUS_SUCCESS;
+    }
 
     /* One critical section covers discovery and device teardown so a concurrent
      * KICK cannot observe a half-removed bootstrap or race a second removal. */
@@ -353,6 +603,10 @@ VOID BootstrapReportCleanupFailure(NTSTATUS status) {
 
 BOOLEAN BootstrapIsActive(VOID) {
     BOOLEAN active;
+
+    if (!g_discoveryReady) {
+        return FALSE;
+    }
 
     KeWaitForSingleObject(&g_discoveryMutex, Executive, KernelMode, FALSE, NULL);
     active = g_active;

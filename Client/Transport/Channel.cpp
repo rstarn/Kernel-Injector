@@ -1,6 +1,7 @@
 #include "Channel.hpp"
 
 #include <cstring>
+#include <cwchar>
 
 ChannelClient::ChannelClient()
     : deviceHandle(INVALID_HANDLE_VALUE),
@@ -17,38 +18,59 @@ bool ChannelClient::ReadBootstrapPath(
     HANDLE file = CreateFileW(
         bootstrapPath.c_str(),
         GENERIC_READ,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        FILE_SHARE_READ,
         nullptr,
         OPEN_EXISTING,
-        FILE_ATTRIBUTE_NORMAL,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
         nullptr);
 
     if (file == INVALID_HANDLE_VALUE) {
         return false;
     }
 
-    wchar_t buffer[512] = {};
+    /* The bootstrap file is one fixed-format record: the AmgerGUID device
+     * prefix, exactly 32 hexadecimal GUID digits, and one UTF-16 NUL.
+     * Reject directories, reparse points, truncation, embedded NULs and
+     * trailing data before opening any device. */
+    FILE_ATTRIBUTE_TAG_INFO fileInfo = {};
+    const BOOL infoOk = GetFileInformationByHandleEx(
+        file, FileAttributeTagInfo, &fileInfo, sizeof(fileInfo));
+    if (!infoOk ||
+        (fileInfo.FileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0u) {
+        CloseHandle(file);
+        return false;
+    }
+
+    static const wchar_t prefix[] = AMGER_USER_DEVICE_PREFIX;
+    constexpr size_t prefixLength = (sizeof(prefix) / sizeof(prefix[0])) - 1u;
+    constexpr size_t expectedCharacters = prefixLength + AMGER_GUID_HEX_LENGTH;
+    wchar_t buffer[expectedCharacters + 2u] = {};
     DWORD bytesRead = 0u;
-    const BOOL readOk = ReadFile(file, buffer, sizeof(buffer) - sizeof(wchar_t),
-                                 &bytesRead, nullptr);
+    const DWORD expectedBytes =
+        static_cast<DWORD>((expectedCharacters + 1u) * sizeof(wchar_t));
+    const DWORD readCapacity = static_cast<DWORD>(sizeof(buffer));
+    const BOOL readOk = ReadFile(file, buffer, readCapacity, &bytesRead, nullptr);
     CloseHandle(file);
 
-    if (!readOk || bytesRead == 0u || (bytesRead % sizeof(wchar_t)) != 0u) {
+    if (!readOk || bytesRead != expectedBytes ||
+        buffer[expectedCharacters] != L'\0' ||
+        wmemcmp(buffer, prefix, prefixLength) != 0) {
         return false;
     }
 
-    const wchar_t* start = buffer;
-    const wchar_t* end = buffer + (bytesRead / sizeof(wchar_t));
-    const wchar_t* terminator = start;
-    while (terminator != end && *terminator != L'\0') {
-        ++terminator;
-    }
-    if (terminator == start) {
-        return false;
+    for (size_t index = prefixLength; index < expectedCharacters; ++index) {
+        const wchar_t character = buffer[index];
+        const bool isHexDigit =
+            (character >= L'0' && character <= L'9') ||
+            (character >= L'A' && character <= L'F') ||
+            (character >= L'a' && character <= L'f');
+        if (!isHexDigit) {
+            return false;
+        }
     }
 
-    devicePath.assign(start, terminator);
-    return devicePath.rfind(L"\\\\.\\", 0u) == 0u;
+    devicePath.assign(buffer, expectedCharacters);
+    return true;
 }
 
 void ChannelClient::WriteCommand(volatile AMGER_COMMAND_HEADER* header, uint32_t command) {
@@ -82,7 +104,8 @@ uint32_t ChannelClient::ReadFinalStatus(volatile AMGER_COMMAND_HEADER* header) {
 }
 
 bool ChannelClient::Connect(const std::wstring& bootstrapPath) {
-    Disconnect();
+    std::lock_guard<std::mutex> lock(operationMutex);
+    DisconnectUnlocked();
 
     std::wstring devicePath;
     if (!ReadBootstrapPath(bootstrapPath, devicePath)) {
@@ -130,7 +153,7 @@ bool ChannelClient::Connect(const std::wstring& bootstrapPath) {
         &bytesReturned,
         nullptr);
     if (!ioctlOk) {
-        Disconnect();
+        DisconnectUnlocked();
         return false;
     }
 
@@ -139,6 +162,7 @@ bool ChannelClient::Connect(const std::wstring& bootstrapPath) {
 }
 
 bool ChannelClient::Ping() {
+    std::lock_guard<std::mutex> lock(operationMutex);
     if (deviceHandle == INVALID_HANDLE_VALUE || sharedRegion == nullptr || header == nullptr) {
         return false;
     }
@@ -165,6 +189,11 @@ bool ChannelClient::Ping() {
 }
 
 void ChannelClient::Disconnect() {
+    std::lock_guard<std::mutex> lock(operationMutex);
+    DisconnectUnlocked();
+}
+
+void ChannelClient::DisconnectUnlocked() {
     header = nullptr;
 
     if (deviceHandle != INVALID_HANDLE_VALUE) {
