@@ -4,6 +4,9 @@ setlocal enabledelayedexpansion
 rem ===========================================================================
 rem Ameger Phase 1 build driver.
 rem Usage: Build.bat [BUILD | CLEAN | REBUILD]
+rem This script is the single source of truth for compiler flags. The former
+rem compile_commands.json is intentionally absent: its per-target commands are
+rem the ones below, so nothing can drift from the build.
 rem Outputs:
 rem   Build\Output\Client.exe
 rem   Build\Output\Driver.sys
@@ -126,7 +129,7 @@ mt.exe -nologo -manifest "%AMGER_ROOT%\Build\Client.exe.manifest" "-outputresour
 if errorlevel 1 goto :Failed
 
 rem --- Driver.sys ----------------------------------------------------
-set "AMGER_DRIVER_FLAGS=/nologo /W4 /TC /GS /kernel /D_AMD64_=1 /DAMD64=1 /D_WIN64=1 /DNTDDI_VERSION=0x0A000000 /I"%AMGER_ROOT%\Shared" /I"%AMGER_KM_INCLUDE%" /I"%AMGER_SHARED_INCLUDE%" /I"%AMGER_UCRT_INCLUDE%""
+set "AMGER_DRIVER_FLAGS=/nologo /W4 /TC /std:c17 /GS /kernel /D_AMD64_=1 /DAMD64=1 /D_WIN64=1 /DNTDDI_VERSION=0x0A000000 /I"%AMGER_ROOT%\Shared" /I"%AMGER_KM_INCLUDE%" /I"%AMGER_SHARED_INCLUDE%" /I"%AMGER_UCRT_INCLUDE%""
 
 cl %AMGER_DRIVER_FLAGS% /c /Fo"%AMGER_OBJECTS%\DriverEntry.obj" "%AMGER_ROOT%\Driver\Initialization\Driver.c"
 if errorlevel 1 goto :Failed
