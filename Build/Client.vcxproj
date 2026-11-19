@@ -52,7 +52,7 @@
     <ClCompile>
       <WarningLevel>Level4</WarningLevel>
       <ExceptionHandling>Sync</ExceptionHandling>
-      <LanguageStandard>stdcpp17</LanguageStandard>
+      <LanguageStandard>stdcpp17</LanguageStandard><AdditionalOptions>/utf-8</AdditionalOptions>
       <PreprocessorDefinitions>UNICODE;_UNICODE;WIN32_LEAN_AND_MEAN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>$(ProjectDir)..\Shared;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <SDLCheck>false</SDLCheck>
@@ -69,7 +69,7 @@
     <ClCompile>
       <WarningLevel>Level4</WarningLevel>
       <ExceptionHandling>Sync</ExceptionHandling>
-      <LanguageStandard>stdcpp17</LanguageStandard>
+      <LanguageStandard>stdcpp17</LanguageStandard><AdditionalOptions>/utf-8</AdditionalOptions>
       <PreprocessorDefinitions>UNICODE;_UNICODE;WIN32_LEAN_AND_MEAN;NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>$(ProjectDir)..\Shared;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <SDLCheck>false</SDLCheck>
@@ -84,13 +84,13 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="$(ProjectDir)..\Client\Application\Main.cpp" />
-    <ClCompile Include="$(ProjectDir)..\Client\Application\Command.cpp" />
-    <ClCompile Include="$(ProjectDir)..\Client\Settings\Configuration.cpp" />
+    <ClCompile Include="$(ProjectDir)..\Client\Interface\Console.cpp" />
+    <ClCompile Include="$(ProjectDir)..\Client\Utilities\Process.cpp" />
     <ClCompile Include="$(ProjectDir)..\Client\Transport\Channel.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="$(ProjectDir)..\Client\Application\Command.hpp" />
-    <ClInclude Include="$(ProjectDir)..\Client\Settings\Configuration.hpp" />
+    <ClInclude Include="$(ProjectDir)..\Client\Interface\Console.hpp" />
+    <ClInclude Include="$(ProjectDir)..\Client\Utilities\Process.hpp" />
     <ClInclude Include="$(ProjectDir)..\Client\Transport\Channel.hpp" />
     <ClInclude Include="$(ProjectDir)..\Shared\Protocol.h" />
   </ItemGroup>

@@ -96,13 +96,13 @@ if not exist "%AMGER_KM_LIB%\ntoskrnl.lib" goto :WdkMissing
 echo [Ameger] WDK %AMGER_WDK_VERSION%
 
 rem --- Client.exe ------------------------------------------------------------
-set "AMGER_CLIENT_FLAGS=/nologo /W4 /EHsc /std:c++17 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /I"%AMGER_ROOT%\Shared""
+set "AMGER_CLIENT_FLAGS=/nologo /W4 /EHsc /std:c++17 /utf-8 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /I"%AMGER_ROOT%\Shared""
 
 cl %AMGER_CLIENT_FLAGS% /c /Fo"%AMGER_OBJECTS%\Main.obj" "%AMGER_ROOT%\Client\Application\Main.cpp"
 if errorlevel 1 goto :Failed
-cl %AMGER_CLIENT_FLAGS% /c /Fo"%AMGER_OBJECTS%\Command.obj" "%AMGER_ROOT%\Client\Application\Command.cpp"
+cl %AMGER_CLIENT_FLAGS% /c /Fo"%AMGER_OBJECTS%\Console.obj" "%AMGER_ROOT%\Client\Interface\Console.cpp"
 if errorlevel 1 goto :Failed
-cl %AMGER_CLIENT_FLAGS% /c /Fo"%AMGER_OBJECTS%\Configuration.obj" "%AMGER_ROOT%\Client\Settings\Configuration.cpp"
+cl %AMGER_CLIENT_FLAGS% /c /Fo"%AMGER_OBJECTS%\Process.obj" "%AMGER_ROOT%\Client\Utilities\Process.cpp"
 if errorlevel 1 goto :Failed
 cl %AMGER_CLIENT_FLAGS% /c /Fo"%AMGER_OBJECTS%\Channel.obj" "%AMGER_ROOT%\Client\Transport\Channel.cpp"
 if errorlevel 1 goto :Failed
@@ -112,8 +112,8 @@ if exist "%AMGER_OUTPUT%\Client.exe" del /q "%AMGER_OUTPUT%\Client.exe"
 rem Disable linker manifest generation so no sidecar is written to Build\Output.
 link /nologo /subsystem:console /machine:x64 /manifest:no /out:"%AMGER_OUTPUT%\Client.exe" ^
     "%AMGER_OBJECTS%\Main.obj" ^
-    "%AMGER_OBJECTS%\Command.obj" ^
-    "%AMGER_OBJECTS%\Configuration.obj" ^
+    "%AMGER_OBJECTS%\Console.obj" ^
+    "%AMGER_OBJECTS%\Process.obj" ^
     "%AMGER_OBJECTS%\Channel.obj" ^
     kernel32.lib user32.lib
 if errorlevel 1 goto :Failed

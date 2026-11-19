@@ -3,19 +3,19 @@
 /*
  * Channel.hpp - user-mode side of the shared-memory channel.
  *
- * Contract: owns the bootstrap device handle and the user allocation that the
- * driver locks with an MDL. One Connect, one Ping, then Disconnect. Commands
- * complete synchronously with the KICK IOCTL; no polling is performed.
- * Inputs: bootstrap file path and the PING command.
+ * Contract: owns the well-known device handle (see AMGER_USER_DEVICE in
+ * Protocol.h) and the user allocation that the driver locks with an MDL.
+ * One Connect, one Ping, then Disconnect. Commands complete synchronously
+ * with the KICK IOCTL; no polling is performed.
+ * Inputs: the fixed Protocol.h device name and the PING command.
  * Outputs: success/failure of each operation and the final driver NTSTATUS.
- * Failure modes: Connect fails on missing file, unopenable device, allocation
- * failure or registration IOCTL failure. Ping fails on IOCTL failure, missing
+ * Failure modes: Connect fails on an unopenable device, allocation failure
+ * or registration IOCTL failure. Ping fails on IOCTL failure, missing
  * completion or any non-success status.
  */
 
 #include <cstdint>
 #include <mutex>
-#include <string>
 #include <Windows.h>
 
 #include "../../Shared/Protocol.h"
@@ -25,7 +25,7 @@ public:
     ChannelClient();
     ~ChannelClient();
 
-    bool Connect(const std::wstring& bootstrapPath);
+    bool Connect();
     bool Ping();
     void Disconnect();
 
@@ -33,7 +33,6 @@ public:
     ChannelClient& operator=(const ChannelClient&) = delete;
 
 private:
-    static bool ReadBootstrapPath(const std::wstring& bootstrapPath, std::wstring& devicePath);
     static void WriteCommand(volatile AMGER_COMMAND_HEADER* header, uint32_t command);
     static uint32_t ReadFinalStatus(volatile AMGER_COMMAND_HEADER* header);
     void DisconnectUnlocked();

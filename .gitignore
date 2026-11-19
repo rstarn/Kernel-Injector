@@ -2,6 +2,9 @@
 Build/Output/
 Build/Objects/
 
+# clangd language-server index cache (redirected outside the repo via .clangd)
+.cache/
+
 # Reference asset
 Assets/Target.dll
 

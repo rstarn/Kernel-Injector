@@ -1,100 +1,179 @@
 /*
- * Client.exe entry point for Phase 1.
+ * Client.exe - interactive console front-end for the Ameger driver.
  *
- * Contract: parse options, locate the driver-written bootstrap file, connect
- * to the random GUID device, and optionally perform one PING round-trip.
- * Inputs: wmain argc/argv; Phase 1 flags --ping, --connect-only,
- * --bootstrap-path.
- * Outputs: process exit code 0 on success, 1 on any failure.
- * Failure modes: a missing bootstrap file, an unopenable device, or a failed
- * PING round-trip each produce exit code 1 with a diagnostic on stdout.
+ * Contract: no command-line arguments are accepted. The user picks a screen
+ * from the main menu; every value shown on those screens is gathered live at
+ * the moment the screen renders, never hardcoded.
+ *   [1] Inject - asks for a process name, resolves it adaptively
+ *                (case-insensitive, extension-optional) and reports the PID.
+ *   [2] Status - performs a live device check: responsiveness, a timed PING
+ *                round-trip, the configured device name and the connection.
+ *   [0] Exit   - leaves the console.
+ * Inputs: none. Outputs: process exit code 0 on a clean exit, 1 never occurs.
+ * Failure modes: an unopenable device or a failed PING is a normal runtime
+ * state, reported in color on screen, not an exit-code failure.
  */
 
 #include <Windows.h>
-#include <iostream>
+#include <optional>
 #include <string>
+#include <wchar.h>
 
-#include "Command.hpp"
-#include "../Settings/Configuration.hpp"
+#include "../Interface/Console.hpp"
+#include "../Utilities/Process.hpp"
 #include "../Transport/Channel.hpp"
+#include "../../Shared/Protocol.h"
 
 namespace {
 
-bool FileExists(const std::wstring& path) {
-    if (path.empty()) {
-        return false;
+std::wstring Trim(const std::wstring& value) {
+    const size_t begin = value.find_first_not_of(L" \t\r\n");
+    if (begin == std::wstring::npos) {
+        return L"";
     }
-
-    const DWORD attributes = GetFileAttributesW(path.c_str());
-    return attributes != INVALID_FILE_ATTRIBUTES &&
-           (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0u;
+    const size_t end = value.find_last_not_of(L" \t\r\n");
+    return value.substr(begin, end - begin + 1u);
 }
 
-/* The driver writes to the system temp directory because kernel mode cannot
- * expand %TEMP%. Try the configured path first, then that well-known fallback. */
-std::wstring ResolveBootstrapFile(const Configuration& configuration) {
-    std::wstring path = configuration.ResolvedBootstrapPath();
-    if (FileExists(path)) {
-        return path;
+void PrintMenu() {
+    Console::WriteText(L"[1]", Console::Brush::Orange);
+    Console::WriteText(L" : ", Console::Brush::Gray);
+    Console::WriteText(L"Inject", Console::Brush::White);
+    Console::WriteRaw(L"\n");
+
+    Console::WriteText(L"[2]", Console::Brush::Orange);
+    Console::WriteText(L" : ", Console::Brush::Gray);
+    Console::WriteText(L"Status", Console::Brush::White);
+    Console::WriteRaw(L"\n\n");
+
+    Console::WriteText(L"[0]", Console::Brush::Orange);
+    Console::WriteText(L" : ", Console::Brush::Gray);
+    Console::WriteText(L"Exit", Console::Brush::White);
+    Console::WriteRaw(L"\n\n");
+}
+
+void InjectScreen() {
+    Console::ClearScreen();
+
+    const std::wstring raw = Console::ReadLine(L"Process Name: ", Console::Brush::White);
+    const std::wstring query = Trim(raw);
+
+    if (query.empty()) {
+        Console::WriteLine(L"No process name entered.", Console::Brush::LightYellow);
+        return;
     }
 
-    DWORD required = ExpandEnvironmentStringsW(
-        L"%SystemRoot%\\Temp\\AmegerBootstrap.txt", nullptr, 0u);
-    if (required != 0u) {
-        std::wstring fallback(required, L'\0');
-        const DWORD written = ExpandEnvironmentStringsW(
-            L"%SystemRoot%\\Temp\\AmegerBootstrap.txt", &fallback[0], required);
-        if (written != 0u && written <= required) {
-            fallback.resize(written - 1u);
-            if (FileExists(fallback)) {
-                return fallback;
-            }
+    const std::optional<DWORD> pid = Process::FindIdByName(query);
+    if (pid.has_value()) {
+        Console::WriteText(L"The selected process target connected successfully. ",
+                           Console::Brush::LightGreen);
+        Console::WriteText(L"(PID: ", Console::Brush::Silver);
+        Console::WriteText(std::to_wstring(*pid), Console::Brush::LightGreen);
+        Console::WriteText(L")\n", Console::Brush::Silver);
+        return;
+    }
+
+    Console::WriteLine(L"The selected process target was not found.",
+                       Console::Brush::LightRed);
+}
+
+void StatusScreen() {
+    Console::ClearScreen();
+
+    ChannelClient client;
+    const bool connected = client.Connect();
+
+    bool pingOk = false;
+    double pingMilliseconds = 0.0;
+    if (connected) {
+        LARGE_INTEGER frequency = {};
+        LARGE_INTEGER started = {};
+        LARGE_INTEGER finished = {};
+        QueryPerformanceFrequency(&frequency);
+        QueryPerformanceCounter(&started);
+        pingOk = client.Ping();
+        QueryPerformanceCounter(&finished);
+        if (frequency.QuadPart > 0) {
+            pingMilliseconds = 1000.0 * static_cast<double>(finished.QuadPart - started.QuadPart) /
+                               static_cast<double>(frequency.QuadPart);
         }
     }
+    client.Disconnect();
 
-    return path;
+    const wchar_t* const stateText = connected && pingOk ? L"Operational"
+                                   : connected           ? L"Degraded"
+                                                         : L"Unavailable";
+    const Console::Brush stateBrush = connected && pingOk ? Console::Brush::LightGreen
+                                    : connected           ? Console::Brush::LightYellow
+                                                          : Console::Brush::LightRed;
+
+    const Console::Brush pingBrush = pingOk ? Console::Brush::LightGreen
+                                   : connected ? Console::Brush::LightRed
+                                               : Console::Brush::Gray;
+    std::wstring pingText;
+    if (pingOk) {
+        wchar_t buffer[32] = {};
+        swprintf_s(buffer, L"%.3f ms", pingMilliseconds);
+        pingText = buffer;
+    } else if (connected) {
+        pingText = L"No response";
+    } else {
+        pingText = L"N/A";
+    }
+
+    const auto row = [](const std::wstring& label, const std::wstring& value,
+                        Console::Brush valueBrush) {
+        constexpr size_t labelWidth = 22u;
+        std::wstring padded = label;
+        if (padded.size() < labelWidth) {
+            padded.append(labelWidth - padded.size(), L' ');
+        }
+        Console::WriteText(padded, Console::Brush::Silver);
+        Console::WriteText(value + L"\n", valueBrush);
+    };
+
+    row(L"State:", stateText, stateBrush);
+    row(L"Ping:", pingText, pingBrush);
+    Console::WriteRaw(L"\n");
+    row(L"Device Name:", AMGER_USER_DEVICE, Console::Brush::LightCyan);
+    row(L"Device Connection:", connected ? L"Connected" : L"Not Connected",
+        connected ? Console::Brush::LightGreen : Console::Brush::LightRed);
+}
+
+void ShowMainScreen() {
+    Console::ClearScreen();
+    Console::RenderBanner();
+    PrintMenu();
 }
 
 }  // namespace
 
-int wmain(int argc, wchar_t** argv) {
-    Configuration configuration;
-    if (!CommandLine::Process(argc, argv, configuration)) {
-        return 1;
+int wmain() {
+    Console::Initialize();
+
+    for (;;) {
+        ShowMainScreen();
+        const std::wstring input = Trim(Console::ReadLine(L"Input: ", Console::Brush::Orange));
+
+        if (input == L"1") {
+            InjectScreen();
+            Console::WaitForEnter();
+            continue;
+        }
+        if (input == L"2") {
+            StatusScreen();
+            Console::WaitForEnter();
+            continue;
+        }
+        if (input == L"0") {
+            break;
+        }
+
+        Console::WriteLine(L"Invalid selection. Enter 1, 2 or 0.", Console::Brush::LightRed);
+        Console::WaitForEnter(L"Press Enter to try again...");
     }
 
-    if (!configuration.pingRequested && !configuration.connectOnly) {
-        CommandLine::PrintUsage();
-        return 1;
-    }
-
-    const std::wstring bootstrapFile = ResolveBootstrapFile(configuration);
-    if (bootstrapFile.empty() || !FileExists(bootstrapFile)) {
-        std::wcerr << L"[-] Bootstrap file not found (STATUS_OBJECT_NAME_NOT_FOUND): "
-                   << bootstrapFile << std::endl;
-        return 1;
-    }
-
-    ChannelClient client;
-    if (!client.Connect(bootstrapFile)) {
-        std::wcerr << L"[-] Failed to connect to bootstrap device" << std::endl;
-        return 1;
-    }
-
-    if (configuration.connectOnly) {
-        std::wcout << L"[+] Connected; bootstrap device consumed" << std::endl;
-        client.Disconnect();
-        return 0;
-    }
-
-    const bool pingSucceeded = client.Ping();
-    client.Disconnect();
-
-    if (!pingSucceeded) {
-        std::wcerr << L"[-] PING failed" << std::endl;
-        return 1;
-    }
-
-    std::wcout << L"[+] PING round-trip succeeded" << std::endl;
+    Console::Reset();
+    Console::WriteRaw(L"Session closed.\n");
     return 0;
 }

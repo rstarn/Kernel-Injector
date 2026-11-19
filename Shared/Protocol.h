@@ -62,14 +62,11 @@
 #define AMGER_SEQUENCE_OFFSET 48u
 #define AMGER_SEQUENCE_RETRY_LIMIT 4u
 
-/* Bootstrap discovery path; both sides resolve to the system temp directory. */
-#define AMGER_BOOTSTRAP_PATH L"%SystemRoot%\\Temp\\AmegerBootstrap.txt"
-
-/* Kernel object name prefixes. The GUID hex suffix is 32 characters. */
-#define AMGER_DEVICE_NAME_PREFIX   L"\\Device\\AmgerGUID"
-#define AMGER_SYMBOLIC_LINK_PREFIX L"\\DosDevices\\AmgerGUID"
-#define AMGER_USER_DEVICE_PREFIX   L"\\\\.\\AmgerGUID"
-#define AMGER_GUID_HEX_LENGTH      32u
+/* Fixed object names. Discovery is by well-known name only: there is no
+ * bootstrap file and no per-load GUID, so the client needs no path argument. */
+#define AMGER_DEVICE_NAME   L"\\Device\\Amger"
+#define AMGER_SYMBOLIC_LINK L"\\DosDevices\\Amger"
+#define AMGER_USER_DEVICE   L"\\\\.\\Amger"
 
 /*
  * CTL_CODE definition, written locally so neither compilation environment
@@ -85,6 +82,10 @@
 #define AMGER_IOCTL_METHOD            0u
 #define AMGER_IOCTL_ACCESS            0x0002u
 
+/*
+ * The PING command is issued through AMGER_IOCTL_KICK with AMGER_COMMAND_PING
+ * in the shared header; there is no dedicated PING IOCTL.
+ */
 #define AMGER_IOCTL_REGISTER_SHARED_REGION \
     CTL_CODE(AMGER_DEVICE_TYPE, AMGER_IOCTL_FUNCTION_REGISTER, AMGER_IOCTL_METHOD, AMGER_IOCTL_ACCESS)
 #define AMGER_IOCTL_KICK \

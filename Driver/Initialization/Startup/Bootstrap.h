@@ -2,17 +2,17 @@
 #define AMGER_BOOTSTRAP_H
 
 /*
- * Bootstrap.h - one-shot GUID device used to deliver the shared region.
+ * Bootstrap.h - genuine driver object and the secured well-known device.
  *
  * Contract: asks the object manager for a genuine DRIVER_OBJECT through
- * IoCreateDriver, then creates a randomly named secured device and DOS
- * symbolic link on it, writes the full user path to the bootstrap file, and
- * removes all of it once. Discovery removal and device destruction are
- * separate operations, and the driver-object reference is released last.
+ * IoCreateDriver, then creates a secured device named in Protocol.h on it,
+ * along with its DOS symbolic link, and removes them once. Discovery removal
+ * and device destruction are separate operations, and the driver-object
+ * reference is released last.
  * Inputs: two output pointers from DriverEntry.
  * Outputs: NTSTATUS from initialization and from cleanup operations.
  * Failure modes: every partially created resource is unwound; deletion errors
- * are returned and flags remain set until the resource is actually gone.
+ * are returned and the link flag remains set until the link is actually gone.
  *
  * The DRIVER_OBJECT supplied to DriverEntry is never accepted here. A manually
  * mapped image receives a fabricated object whose OBJECT_HEADER is invalid;
@@ -25,8 +25,8 @@
 #include <wdm.h>
 
 /*
- * Contract: creates the genuine driver object, then the secured GUID device,
- * symbolic link and bootstrap file on it.
+ * Contract: creates the genuine driver object, then the secured well-known
+ * device and symbolic link on it.
  * Inputs: OutDeviceObject and OutDriverObject, both required and nulled on
  * entry.
  * Outputs: STATUS_SUCCESS with both pointers valid.
@@ -50,10 +50,10 @@ NTSTATUS BootstrapInitialize(
 VOID BootstrapReleaseDriverObject(VOID);
 
 /*
- * Contract: removes the bootstrap file and symbolic link. Idempotent.
- * Inputs: none. Outputs: STATUS_SUCCESS, or the first deletion error.
+ * Contract: removes the symbolic link. Idempotent.
+ * Inputs: none. Outputs: STATUS_SUCCESS, or the link deletion error.
  * Failure modes: STATUS_OBJECT_NAME_NOT_FOUND is treated as success; other
- * errors are returned and leave the corresponding state flag set.
+ * errors are returned and leave the link flag set so a later retry can run.
  */
 NTSTATUS BootstrapRemoveDiscovery(VOID);
 
