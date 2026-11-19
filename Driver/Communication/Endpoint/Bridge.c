@@ -40,45 +40,12 @@ static PVOID g_sharedSystemAddress = NULL;
 static SIZE_T g_sharedRegionSize = 0u;
 static PFILE_OBJECT g_ownerFile = NULL;
 static BOOLEAN g_connectionClosing = FALSE;
-/* Terminal, monotonic shutdown marker. Once set under g_regionLock it is never
- * cleared: the device and its symbolic link are being torn down and no future
- * REGISTER or KICK may be admitted, even if BootstrapDestroy must be retried. */
+/* Terminal, monotonic shutdown marker. Only DriverUnload sets it, under
+ * g_regionLock, when the device and its symbolic link are being destroyed.
+ * Client exit never sets it: the device must stay openable by name. */
 static BOOLEAN g_terminalShutdown = FALSE;
-static BOOLEAN g_bootstrapPending = FALSE;
 
-/* Bootstrap discovery state is shared by the KICK, CLOSE and unload paths.
- * These accessors serialize reads/writes with g_regionLock. The deletion work
- * itself is serialized inside Bootstrap.c and is never run while this spinlock
- * is held, so no blocking object-manager call occurs at raised IRQL. */
-static BOOLEAN BootstrapRemovalPending(VOID) {
-    KIRQL oldIrql;
-    BOOLEAN pending;
 
-    KeAcquireSpinLock(&g_regionLock, &oldIrql);
-    pending = g_bootstrapPending;
-    KeReleaseSpinLock(&g_regionLock, oldIrql);
-    return pending;
-}
-
-static VOID MarkBootstrapPending(VOID) {
-    KIRQL oldIrql;
-
-    KeAcquireSpinLock(&g_regionLock, &oldIrql);
-    g_bootstrapPending = TRUE;
-    KeReleaseSpinLock(&g_regionLock, oldIrql);
-}
-
-static VOID RecordDiscoveryRemoval(NTSTATUS removalStatus) {
-    KIRQL oldIrql;
-
-    KeAcquireSpinLock(&g_regionLock, &oldIrql);
-    /* Only a successful removal clears the pending marker; on failure a later
-     * KICK retries discovery removal. */
-    if (NT_SUCCESS(removalStatus)) {
-        g_bootstrapPending = FALSE;
-    }
-    KeReleaseSpinLock(&g_regionLock, oldIrql);
-}
 
 static NTSTATUS CompleteIrp(PIRP Irp, NTSTATUS status, ULONG_PTR information) {
     Irp->IoStatus.Status = status;
@@ -93,8 +60,7 @@ static NTSTATUS DefaultDispatch(PDEVICE_OBJECT DeviceObject, PIRP Irp) {
 }
 
 /* CLEANUP runs in the closing process context and releases the user-mapped
- * region. The device stays alive so the subsequent CLOSE IRP can be delivered
- * and can delete the device object safely. */
+ * region. The device and its name stay alive so a later client can connect. */
 static NTSTATUS CleanupDispatch(PDEVICE_OBJECT DeviceObject, PIRP Irp) {
     PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(Irp);
     NTSTATUS status;
@@ -105,10 +71,10 @@ static NTSTATUS CleanupDispatch(PDEVICE_OBJECT DeviceObject, PIRP Irp) {
     return CompleteIrp(Irp, status, 0u);
 }
 
-/* CLOSE runs after CLEANUP and after outstanding IRPs are finished. The owner
- * initiates teardown; once terminal shutdown has begun, any later CLOSE retries
- * it, because a successful release clears g_ownerFile before the bootstrap
- * teardown that may still fail. */
+/* CLOSE runs after CLEANUP and after outstanding IRPs are finished. It only
+ * releases the caller's region. The device object and symbolic link are never
+ * touched here: they remain openable so the next client can connect by name.
+ * Only DriverUnload enters terminal shutdown and destroys the bootstrap. */
 static NTSTATUS CloseDispatch(PDEVICE_OBJECT DeviceObject, PIRP Irp) {
     PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(Irp);
     KIRQL oldIrql;
@@ -118,9 +84,6 @@ static NTSTATUS CloseDispatch(PDEVICE_OBJECT DeviceObject, PIRP Irp) {
     UNREFERENCED_PARAMETER(DeviceObject);
 
     if (stack != NULL) {
-        /* Read ownership and the terminal marker in one critical section: an
-         * ordinary non-owner CLOSE never starts shutdown, but a CLOSE arriving
-         * after shutdown began must retry even though the owner is gone. */
         KeAcquireSpinLock(&g_regionLock, &oldIrql);
         owner = (g_ownerFile != NULL && stack->FileObject == g_ownerFile);
         shutdownStarted = g_terminalShutdown;
@@ -128,24 +91,10 @@ static NTSTATUS CloseDispatch(PDEVICE_OBJECT DeviceObject, PIRP Irp) {
     }
 
     if (owner || shutdownStarted) {
-        NTSTATUS regionStatus;
-        NTSTATUS destroyStatus;
-        NTSTATUS status;
-
-        if (owner) {
-            /* Enter terminal shutdown before releasing ownership, so no new
-             * REGISTER/KICK can be admitted in the window before the device
-             * and symbolic link are removed by BootstrapDestroy(). */
-            (void)BridgeBeginShutdown();
-        }
-
         /* Idempotent: ReleaseRegion claims the MDL once with
-         * InterlockedExchangePointer, and BootstrapDestroy is serialized by
-         * g_discoveryMutex, so concurrent retries cannot double-free. */
-        regionStatus = BridgeReleaseResources();
-        destroyStatus = BootstrapDestroy();
-        status = NT_SUCCESS(regionStatus) ? destroyStatus : regionStatus;
-
+         * InterlockedExchangePointer, so concurrent retries cannot double-free.
+         * CLEANUP may have timed out; this unbounded pass reclaims the region. */
+        const NTSTATUS status = BridgeReleaseResources();
         return CompleteIrp(Irp, status, 0u);
     }
 
@@ -378,10 +327,8 @@ NTSTATUS BridgeBeginShutdown(VOID) {
 
     /* Enter terminal shutdown atomically with the connection-close transition.
      * This runs before BridgeReleaseResources() clears g_ownerFile /
-     * g_connectionClosing / g_regionState, so there is no window in which a
-     * new CREATE+REGISTER could be admitted while BootstrapDestroy() is still
-     * removing the device and symbolic link. g_ownerFile is deliberately left
-     * intact so the current CLOSE path can still identify its owner. */
+     * g_connectionClosing / g_regionState, so no new CREATE+REGISTER can be
+     * admitted while DriverUnload removes the device and symbolic link. */
     KeAcquireSpinLock(&g_regionLock, &oldIrql);
     g_terminalShutdown = TRUE;
     g_connectionClosing = TRUE;
@@ -568,9 +515,6 @@ NTSTATUS BridgeDispatch(PDEVICE_OBJECT DeviceObject, PIRP Irp) {
             return CompleteIrp(Irp, STATUS_INVALID_DEVICE_STATE, 0u);
         }
 
-        /* Keep the device alive until the first KICK reaches this driver. */
-        MarkBootstrapPending();
-
         return CompleteIrp(Irp, STATUS_SUCCESS, 0u);
     }
 
@@ -617,19 +561,52 @@ NTSTATUS BridgeDispatch(PDEVICE_OBJECT DeviceObject, PIRP Irp) {
 
         RegionEndOperation();
 
-        if (BootstrapRemovalPending()) {
-            /* Remove discovery only; CLEANUP releases the MDL and CLOSE deletes
-             * the device after all IRPs for this handle have finished. The file
-             * and link deletion is serialized inside Bootstrap.c. */
-            RecordDiscoveryRemoval(BootstrapRemoveDiscovery());
-        }
-
         /* If the final status could not be published, the client cannot observe
          * the outcome, so this KICK must not be reported as a success. */
         if (NT_SUCCESS(status) && !NT_SUCCESS(writeStatus)) {
             status = writeStatus;
         }
 
+        return CompleteIrp(Irp, status, 0u);
+    }
+
+    case AMGER_IOCTL_UNLOAD: {
+        BOOLEAN owner;
+        KIRQL oldIrql;
+        NTSTATUS status;
+        NTSTATUS bootstrapStatus;
+
+        if (stack->Parameters.DeviceIoControl.InputBufferLength != 0u ||
+            stack->Parameters.DeviceIoControl.OutputBufferLength != 0u) {
+            return CompleteIrp(Irp, STATUS_INVALID_PARAMETER, 0u);
+        }
+
+        KeAcquireSpinLock(&g_regionLock, &oldIrql);
+        owner = (stack->FileObject != NULL &&
+                 stack->FileObject == g_ownerFile &&
+                 !g_terminalShutdown);
+        KeReleaseSpinLock(&g_regionLock, oldIrql);
+        if (!owner) {
+            return CompleteIrp(Irp, STATUS_ACCESS_DENIED, 0u);
+        }
+
+        /* Terminal shutdown first: no new REGISTER or KICK may be admitted
+         * while the device is being removed. Client CLOSE after this is a
+         * no-op because ownership was already cleared. */
+        status = BridgeBeginShutdown();
+        if (!NT_SUCCESS(status)) {
+            return CompleteIrp(Irp, status, 0u);
+        }
+
+        status = BridgeReleaseResources();
+        bootstrapStatus = BootstrapDestroy();
+        if (NT_SUCCESS(status)) {
+            status = bootstrapStatus;
+        }
+
+        /* The driver object reference is deliberately kept: the image was
+         * manually mapped and stays resident. Only the device and its name
+         * are gone, so a later map can claim the same fixed names. */
         return CompleteIrp(Irp, status, 0u);
     }
 

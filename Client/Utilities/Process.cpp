@@ -71,15 +71,15 @@ bool MatchesImageName(const std::wstring& normalizedQuery, const std::wstring& i
            StripExe(normalizedQuery) == StripExe(name);
 }
 
-std::optional<DWORD> FindIdByName(const std::wstring& rawQuery) {
+bool FindIdByName(const std::wstring& rawQuery, DWORD& outPid) {
     const std::wstring query = NormalizeQuery(rawQuery);
     if (query.empty()) {
-        return std::nullopt;
+        return false;
     }
 
     const HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0u);
     if (snapshot == INVALID_HANDLE_VALUE) {
-        return std::nullopt;
+        return false;
     }
 
     DWORD best = static_cast<DWORD>(-1);
@@ -98,9 +98,10 @@ std::optional<DWORD> FindIdByName(const std::wstring& rawQuery) {
     CloseHandle(snapshot);
 
     if (best == static_cast<DWORD>(-1)) {
-        return std::nullopt;
+        return false;
     }
-    return best;
+    outPid = best;
+    return true;
 }
 
 }  // namespace Process

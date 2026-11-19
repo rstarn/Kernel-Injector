@@ -2,8 +2,9 @@
  * Driver.sys entry point for Phase 1.
  *
  * Contract: obtain a genuine driver object from the object manager, create the
- * one-shot secured bootstrap device on it, install the IOCTL dispatch and
- * unload routine, and return STATUS_SUCCESS. DriverEntry failure unwinds
+ * secured well-known device on it, install the IOCTL dispatch and unload
+ * routine, and return STATUS_SUCCESS. The device outlives every client and is
+ * destroyed only by unload. DriverEntry failure unwinds
  * partial initialization directly because the OS does not call DriverUnload in
  * that case.
  * Inputs: the mapper-supplied DRIVER_OBJECT (rejected, never dereferenced) and

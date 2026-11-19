@@ -5,8 +5,8 @@
  *
  * Contract: owns the well-known device handle (see AMGER_USER_DEVICE in
  * Protocol.h) and the user allocation that the driver locks with an MDL.
- * One Connect, one Ping, then Disconnect. Commands complete synchronously
- * with the KICK IOCTL; no polling is performed.
+ * One Connect, then Ping / Unload, then Disconnect. Commands complete
+ * synchronously with their IOCTL; no polling is performed.
  * Inputs: the fixed Protocol.h device name and the PING command.
  * Outputs: success/failure of each operation and the final driver NTSTATUS.
  * Failure modes: Connect fails on an unopenable device, allocation failure
@@ -26,7 +26,9 @@ public:
     ~ChannelClient();
 
     bool Connect();
+    bool Connected() const;
     bool Ping();
+    bool Unload();
     void Disconnect();
 
     ChannelClient(const ChannelClient&) = delete;
@@ -37,7 +39,7 @@ private:
     static uint32_t ReadFinalStatus(volatile AMGER_COMMAND_HEADER* header);
     void DisconnectUnlocked();
 
-    std::mutex operationMutex;
+    mutable std::mutex operationMutex;
     HANDLE deviceHandle;
     void* sharedRegion;
     volatile AMGER_COMMAND_HEADER* header;

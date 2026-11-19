@@ -8,6 +8,10 @@
  *                (case-insensitive, extension-optional) and reports the PID.
  *   [2] Status - performs a live device check: responsiveness, a timed PING
  *                round-trip, the configured device name and the connection.
+ *                One channel is opened on first use and kept for the session.
+ *                The device persists across client launches, so exiting and
+ *                relaunching needs no re-map.
+ *   [3] Unload - removes the device and its name so the driver can be re-mapped.
  *   [0] Exit   - leaves the console.
  * Inputs: none. Outputs: process exit code 0 on a clean exit, 1 never occurs.
  * Failure modes: an unopenable device or a failed PING is a normal runtime
@@ -15,7 +19,6 @@
  */
 
 #include <Windows.h>
-#include <optional>
 #include <string>
 #include <wchar.h>
 
@@ -44,6 +47,11 @@ void PrintMenu() {
     Console::WriteText(L"[2]", Console::Brush::Orange);
     Console::WriteText(L" : ", Console::Brush::Gray);
     Console::WriteText(L"Status", Console::Brush::White);
+    Console::WriteRaw(L"\n");
+
+    Console::WriteText(L"[3]", Console::Brush::Orange);
+    Console::WriteText(L" : ", Console::Brush::Gray);
+    Console::WriteText(L"Unload", Console::Brush::White);
     Console::WriteRaw(L"\n\n");
 
     Console::WriteText(L"[0]", Console::Brush::Orange);
@@ -51,6 +59,10 @@ void PrintMenu() {
     Console::WriteText(L"Exit", Console::Brush::White);
     Console::WriteRaw(L"\n\n");
 }
+
+struct Session {
+    ChannelClient channel;
+};
 
 void InjectScreen() {
     Console::ClearScreen();
@@ -63,12 +75,12 @@ void InjectScreen() {
         return;
     }
 
-    const std::optional<DWORD> pid = Process::FindIdByName(query);
-    if (pid.has_value()) {
+    DWORD pid = 0u;
+    if (Process::FindIdByName(query, pid)) {
         Console::WriteText(L"The selected process target connected successfully. ",
                            Console::Brush::LightGreen);
         Console::WriteText(L"(PID: ", Console::Brush::Silver);
-        Console::WriteText(std::to_wstring(*pid), Console::Brush::LightGreen);
+        Console::WriteText(std::to_wstring(pid), Console::Brush::LightGreen);
         Console::WriteText(L")\n", Console::Brush::Silver);
         return;
     }
@@ -77,11 +89,11 @@ void InjectScreen() {
                        Console::Brush::LightRed);
 }
 
-void StatusScreen() {
+void StatusScreen(Session& session) {
     Console::ClearScreen();
 
-    ChannelClient client;
-    const bool connected = client.Connect();
+    ChannelClient& client = session.channel;
+    const bool connected = client.Connected() || client.Connect();
 
     bool pingOk = false;
     double pingMilliseconds = 0.0;
@@ -98,7 +110,6 @@ void StatusScreen() {
                                static_cast<double>(frequency.QuadPart);
         }
     }
-    client.Disconnect();
 
     const wchar_t* const stateText = connected && pingOk ? L"Operational"
                                    : connected           ? L"Degraded"
@@ -140,6 +151,27 @@ void StatusScreen() {
         connected ? Console::Brush::LightGreen : Console::Brush::LightRed);
 }
 
+void UnloadScreen(Session& session) {
+    Console::ClearScreen();
+
+    ChannelClient& client = session.channel;
+    const bool connected = client.Connected() || client.Connect();
+    if (!connected) {
+        Console::WriteLine(L"Device unavailable. Nothing to unload.",
+                           Console::Brush::LightYellow);
+        return;
+    }
+
+    const bool unloaded = client.Unload();
+    client.Disconnect();
+    if (unloaded) {
+        Console::WriteLine(L"Device and name removed. Re-map before reconnecting.",
+                           Console::Brush::LightGreen);
+    } else {
+        Console::WriteLine(L"Unload failed.", Console::Brush::LightRed);
+    }
+}
+
 void ShowMainScreen() {
     Console::ClearScreen();
     Console::RenderBanner();
@@ -150,6 +182,7 @@ void ShowMainScreen() {
 
 int wmain() {
     Console::Initialize();
+    Session session;
 
     for (;;) {
         ShowMainScreen();
@@ -161,7 +194,12 @@ int wmain() {
             continue;
         }
         if (input == L"2") {
-            StatusScreen();
+            StatusScreen(session);
+            Console::WaitForEnter();
+            continue;
+        }
+        if (input == L"3") {
+            UnloadScreen(session);
             Console::WaitForEnter();
             continue;
         }
@@ -169,7 +207,7 @@ int wmain() {
             break;
         }
 
-        Console::WriteLine(L"Invalid selection. Enter 1, 2 or 0.", Console::Brush::LightRed);
+        Console::WriteLine(L"Invalid selection. Enter 1, 2, 3 or 0.", Console::Brush::LightRed);
         Console::WaitForEnter(L"Press Enter to try again...");
     }
 

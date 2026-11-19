@@ -5,3 +5,30 @@ CompileFlags:
     - -fms-extensions
     - -fms-compatibility
     - -fms-compatibility-version=19.51
+---
+If:
+  PathMatch: Client/.*\.cpp$
+CompileFlags:
+  Add:
+    - -std=c++17
+---
+If:
+  PathMatch: Driver/.*\.c$
+CompileFlags:
+  Add:
+    - -std=c17
+    - -D_AMD64_=1
+    - -DAMD64=1
+    - -D_WIN64=1
+    - -DNTDDI_VERSION=0x0A000000
+    - '-IC:\Program Files (x86)\Windows Kits\10\Include\10.0.28000.0\km'
+---
+If:
+  PathMatch: Driver/.*\.h$
+CompileFlags:
+  Add:
+    - -D_AMD64_=1
+    - -DAMD64=1
+    - -D_WIN64=1
+    - -DNTDDI_VERSION=0x0A000000
+    - '-IC:\Program Files (x86)\Windows Kits\10\Include\10.0.28000.0\km'

@@ -14,10 +14,10 @@
  * creation took its own reference) has been deleted.
  *
  * Discovery is by well-known name only (see Protocol.h): the device and its
- * symbolic link are created unconditionally at DriverEntry and are not
- * concealed. BootstrapRemoveDiscovery removes only the symbolic link, so a
- * device that has served its first KICK is no longer openable by name while
- * the device object itself stays alive for the already-registered client.
+ * symbolic link are created unconditionally at DriverEntry and stay available
+ * for every client until DriverUnload. No command or client exit removes the
+ * name. BootstrapDestroy removes the link and the device together during
+ * unload; BootstrapRemoveDiscovery is its link-only helper.
  */
 
 #include <ntifs.h>

@@ -95,6 +95,11 @@ bool ChannelClient::Connect() {
     return true;
 }
 
+bool ChannelClient::Connected() const {
+    std::lock_guard<std::mutex> lock(operationMutex);
+    return header != nullptr;
+}
+
 bool ChannelClient::Ping() {
     std::lock_guard<std::mutex> lock(operationMutex);
     if (deviceHandle == INVALID_HANDLE_VALUE || sharedRegion == nullptr || header == nullptr) {
@@ -120,6 +125,25 @@ bool ChannelClient::Ping() {
     return kickOk != FALSE &&
            status != AMGER_STATUS_PENDING &&
            status == 0u; /* STATUS_SUCCESS is zero in both environments. */
+}
+
+bool ChannelClient::Unload() {
+    std::lock_guard<std::mutex> lock(operationMutex);
+    if (deviceHandle == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+
+    DWORD bytesReturned = 0u;
+    const BOOL unloadOk = DeviceIoControl(
+        deviceHandle,
+        AMGER_IOCTL_UNLOAD,
+        nullptr,
+        0u,
+        nullptr,
+        0u,
+        &bytesReturned,
+        nullptr);
+    return unloadOk != FALSE;
 }
 
 void ChannelClient::Disconnect() {

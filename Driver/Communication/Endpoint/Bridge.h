@@ -28,11 +28,14 @@ NTSTATUS BridgeRegisterIoControl(
     PDEVICE_OBJECT DeviceObject);
 
 /*
- * Contract: services REGISTER_SHARED_REGION and KICK with explicit completion.
+ * Contract: services REGISTER_SHARED_REGION, KICK and UNLOAD with explicit
+ * completion. UNLOAD is owner-only and removes the device and its symbolic
+ * link; the driver object stays resident so a later map can reuse the names.
  * Inputs: DeviceObject and IRP from the I/O manager.
  * Outputs: completed IRP whose status is the actual command outcome.
  * Failure modes: STATUS_INVALID_PARAMETER, STATUS_INVALID_DEVICE_STATE,
- * STATUS_INVALID_DEVICE_REQUEST or the dispatcher's NTSTATUS.
+ * STATUS_ACCESS_DENIED, STATUS_INVALID_DEVICE_REQUEST or the dispatcher's
+ * NTSTATUS.
  */
 NTSTATUS BridgeDispatch(
     PDEVICE_OBJECT DeviceObject,
@@ -42,8 +45,8 @@ NTSTATUS BridgeDispatch(
  * Contract: enters the terminal shutdown state atomically under g_regionLock
  * and marks the connection closing. Once set, shutdown is never cleared, so no
  * subsequent REGISTER or KICK is admitted even if bootstrap teardown fails and
- * must be retried. Idempotent. Called by CLOSE and unload before resource
- * release; g_ownerFile is left intact so the caller can still identify owner.
+ * must be retried. Idempotent. Called only by DriverUnload before resource
+ * release; client CLOSE never enters terminal shutdown.
  * Inputs: none. Outputs: STATUS_SUCCESS. Failure modes: none.
  */
 NTSTATUS BridgeBeginShutdown(VOID);

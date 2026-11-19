@@ -6,9 +6,10 @@
  *
  * Contract: asks the object manager for a genuine DRIVER_OBJECT through
  * IoCreateDriver, then creates a secured device named in Protocol.h on it,
- * along with its DOS symbolic link, and removes them once. Discovery removal
- * and device destruction are separate operations, and the driver-object
- * reference is released last.
+ * along with its DOS symbolic link. Both stay available until DriverUnload:
+ * client exit never removes the name or the device. Discovery removal and
+ * device destruction are separate operations, and the driver-object reference
+ * is released last.
  * Inputs: two output pointers from DriverEntry.
  * Outputs: NTSTATUS from initialization and from cleanup operations.
  * Failure modes: every partially created resource is unwound; deletion errors
