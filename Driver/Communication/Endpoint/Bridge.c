@@ -1,3 +1,4 @@
+
 #include "Bridge.h"
 
 #include "../Routing/Dispatcher.h"
@@ -17,6 +18,7 @@ typedef struct _AMGER_REGISTRATION_CONTEXT {
     AMGER_SHARED_REGION_REQUEST Request;
     PFILE_OBJECT OwnerFile;
     PMDL Mdl;
+    PVOID UserAddress;
     PVOID SystemAddress;
     BOOLEAN Locked;
 } AMGER_REGISTRATION_CONTEXT, * PAMGER_REGISTRATION_CONTEXT;
@@ -36,6 +38,7 @@ static KMUTEX g_commandMutex;
 static AMGER_REGION_STATE g_regionState = RegionStateUnregistered;
 static volatile LONG g_activeOperations = 0;
 static PMDL g_sharedMdl = NULL;
+static PVOID g_sharedUserAddress = NULL;
 static PVOID g_sharedSystemAddress = NULL;
 static SIZE_T g_sharedRegionSize = 0u;
 static PFILE_OBJECT g_ownerFile = NULL;
@@ -147,6 +150,7 @@ static BOOLEAN RegionCommitRegistration(PAMGER_REGISTRATION_CONTEXT Context) {
     accepted = !g_connectionClosing && g_regionState == RegionStateRegistering;
     if (accepted) {
         g_sharedMdl = Context->Mdl;
+        g_sharedUserAddress = Context->UserAddress;
         g_sharedSystemAddress = Context->SystemAddress;
         g_sharedRegionSize = (SIZE_T)Context->Request.Size;
         g_ownerFile = Context->OwnerFile;
@@ -216,8 +220,10 @@ static NTSTATUS RegistrationWorker(PVOID ContextParameter) {
         return STATUS_INVALID_PARAMETER;
     }
 
+    context->UserAddress = (PVOID)(uintptr_t)context->Request.VirtualAddress;
+
     context->Mdl = IoAllocateMdl(
-        (PVOID)(uintptr_t)context->Request.VirtualAddress,
+        context->UserAddress,
         (ULONG)context->Request.Size,
         FALSE,
         FALSE,
@@ -274,6 +280,35 @@ static NTSTATUS CaptureSnapshot(
     return STATUS_RETRY;
 }
 
+/* A payload range must lie entirely inside the registered user region. Without
+ * this, a snapshot naming an arbitrary user address would turn the mapped MDL
+ * into a kernel read/write primitive. Zero size means "no payload". */
+static NTSTATUS ValidatePayloadRange(const AMGER_COMMAND_SNAPSHOT* Snapshot) {
+    uint64_t regionStart;
+    uint64_t regionEnd;
+    uint64_t payloadStart;
+
+    if (Snapshot->PayloadSize == 0u) {
+        return STATUS_SUCCESS;
+    }
+    if (g_sharedUserAddress == NULL || g_sharedSystemAddress == NULL ||
+        g_sharedRegionSize < sizeof(AMGER_COMMAND_HEADER)) {
+        return STATUS_INVALID_DEVICE_STATE;
+    }
+
+    regionStart = (uint64_t)(uintptr_t)g_sharedUserAddress;
+    regionEnd = regionStart + (uint64_t)g_sharedRegionSize;
+    payloadStart = Snapshot->PayloadVirtualAddress;
+
+    /* Subtraction form avoids overflow from a hostile PayloadSize. */
+    if (payloadStart < regionStart || payloadStart > regionEnd ||
+        Snapshot->PayloadSize > regionEnd - payloadStart) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    return STATUS_SUCCESS;
+}
+
 static NTSTATUS WriteStatusWorker(PVOID ContextParameter) {
     PAMGER_STATUS_WRITE_CONTEXT context = (PAMGER_STATUS_WRITE_CONTEXT)ContextParameter;
     if (context->Header == NULL) {
@@ -283,9 +318,35 @@ static NTSTATUS WriteStatusWorker(PVOID ContextParameter) {
     return STATUS_SUCCESS;
 }
 
+/* Appends one record to the log ring at the tail of the registered region.
+ * The ring sequence is published last, so a reading client can detect a torn
+ * record by sampling it twice. */
+static VOID LogStage(PVOID SystemAddress,
+                     SIZE_T RegionSize,
+                     uint16_t Id,
+                     uint32_t Status,
+                     uint32_t Detail) {
+    volatile AMGER_LOG_RING* ring = (volatile AMGER_LOG_RING*)(
+        (PUCHAR)SystemAddress + RegionSize - sizeof(AMGER_LOG_RING));
+    uint32_t sequence = (uint32_t)InterlockedCompareExchange(
+        (volatile long*)&ring->Sequence, 0L, 0L);
+    volatile AMGER_LOG_ENTRY* entry =
+        &ring->Entries[sequence % AMGER_LOG_ENTRY_COUNT];
+
+    ++sequence;
+    entry->Sequence = sequence;
+    entry->Id = Id;
+    entry->Reserved = 0u;
+    entry->Status = Status;
+    entry->Detail = Detail;
+    MemoryBarrier();
+    InterlockedExchange((volatile long*)&ring->Sequence, (long)sequence);
+}
+
 static NTSTATUS KickWorker(PVOID ContextParameter) {
     PAMGER_KICK_CONTEXT context = (PAMGER_KICK_CONTEXT)ContextParameter;
     AMGER_COMMAND_SNAPSHOT snapshot;
+    AMGER_DISPATCH_CONTEXT dispatch;
     NTSTATUS status;
 
     context->Status = AMGER_STATUS_PENDING;
@@ -295,12 +356,44 @@ static NTSTATUS KickWorker(PVOID ContextParameter) {
     }
 
     status = CaptureSnapshot(context->Header, &snapshot);
+    if (status == STATUS_RETRY) {
+        LogStage(g_sharedSystemAddress, g_sharedRegionSize,
+                 (uint16_t)AMGER_LOG_ID_SNAPSHOT_RETRY,
+                 (uint32_t)status, AMGER_SEQUENCE_RETRY_LIMIT);
+    }
+    LogStage(g_sharedSystemAddress, g_sharedRegionSize,
+             (uint16_t)AMGER_LOG_ID_HEADER_VALIDATE, (uint32_t)status, 0u);
     if (!NT_SUCCESS(status)) {
         context->Status = (uint32_t)status;
         return status;
     }
 
-    status = DispatcherDispatch(&snapshot, &context->Status);
+    status = ValidatePayloadRange(&snapshot);
+    LogStage(g_sharedSystemAddress, g_sharedRegionSize,
+             (uint16_t)AMGER_LOG_ID_PAYLOAD_RANGE, (uint32_t)status, 0u);
+    if (!NT_SUCCESS(status)) {
+        context->Status = (uint32_t)status;
+        return status;
+    }
+
+    dispatch.Snapshot = &snapshot;
+    dispatch.PayloadSystemAddress = NULL;
+    dispatch.PayloadSize = 0u;
+    dispatch.PayloadOffset = 0u;
+    dispatch.StageId = (uint16_t)AMGER_LOG_ID_COMMAND_DECODE;
+    if (snapshot.PayloadSize != 0u) {
+        const SIZE_T offset = (SIZE_T)(snapshot.PayloadVirtualAddress -
+                                       (uint64_t)(uintptr_t)g_sharedUserAddress);
+        dispatch.PayloadSystemAddress = (PVOID)((PUCHAR)g_sharedSystemAddress + offset);
+        dispatch.PayloadSize = (SIZE_T)snapshot.PayloadSize;
+        dispatch.PayloadOffset = offset;
+    }
+
+    status = DispatcherDispatch(&dispatch, &context->Status);
+    LogStage(g_sharedSystemAddress, g_sharedRegionSize,
+             dispatch.StageId, (uint32_t)status, 0u);
+    LogStage(g_sharedSystemAddress, g_sharedRegionSize,
+             (uint16_t)AMGER_LOG_ID_RESULT, (uint32_t)status, 0u);
     context->Header->Status = context->Status;
     return status;
 }
@@ -346,6 +439,8 @@ static NTSTATUS ReleaseRegion(BOOLEAN ClearOwner, BOOLEAN BoundedWait) {
     PMDL mdl;
     LARGE_INTEGER interval;
     ULONG waitCount;
+    PVOID logAddress = g_sharedSystemAddress;
+    SIZE_T logRegionSize = g_sharedRegionSize;
 
     NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
 
@@ -357,6 +452,11 @@ static NTSTATUS ReleaseRegion(BOOLEAN ClearOwner, BOOLEAN BoundedWait) {
             /* CLEANUP keeps its bounded contract: report busy and let the
              * worker finish; CLOSE / unload reclaim the region afterwards. */
             KeReleaseSpinLock(&g_regionLock, oldIrql);
+            if (logAddress != NULL) {
+                LogStage(logAddress, logRegionSize,
+                         (uint16_t)AMGER_LOG_ID_CLEANUP_DRAIN,
+                         (uint32_t)STATUS_DEVICE_BUSY, 0u);
+            }
             return STATUS_DEVICE_BUSY;
         }
         /* Unbounded path (CLOSE / unload). Proceeding now would let the caller
@@ -393,6 +493,12 @@ static NTSTATUS ReleaseRegion(BOOLEAN ClearOwner, BOOLEAN BoundedWait) {
         if (BoundedWait && waitCount >= 1000u) {
             /* Keep Closing and the MDL intact. CLOSE / unload will retry after
              * the outstanding IRP has completed; no mapping is released here. */
+            if (logAddress != NULL) {
+                LogStage(logAddress, logRegionSize,
+                         (uint16_t)AMGER_LOG_ID_CLEANUP_DRAIN,
+                         (uint32_t)STATUS_TIMEOUT,
+                         (uint32_t)InterlockedCompareExchange(&g_activeOperations, 0L, 0L));
+            }
             return STATUS_TIMEOUT;
         }
         KeDelayExecutionThread(KernelMode, FALSE, &interval);
@@ -400,6 +506,18 @@ static NTSTATUS ReleaseRegion(BOOLEAN ClearOwner, BOOLEAN BoundedWait) {
             continue;
         }
         ++waitCount;
+    }
+
+    if (logAddress != NULL) {
+        if (BoundedWait) {
+            LogStage(logAddress, logRegionSize,
+                     (uint16_t)AMGER_LOG_ID_CLEANUP_DRAIN,
+                     (uint32_t)STATUS_SUCCESS, 0u);
+        } else {
+            LogStage(logAddress, logRegionSize,
+                     (uint16_t)AMGER_LOG_ID_CLOSE_RECLAIM,
+                     (uint32_t)STATUS_SUCCESS, (uint32_t)logRegionSize);
+        }
     }
 
     /* Claim the MDL only after the drain succeeded. Competing CLOSE/unload
@@ -411,6 +529,7 @@ static NTSTATUS ReleaseRegion(BOOLEAN ClearOwner, BOOLEAN BoundedWait) {
     }
 
     KeAcquireSpinLock(&g_regionLock, &oldIrql);
+    g_sharedUserAddress = NULL;
     g_sharedSystemAddress = NULL;
     g_sharedRegionSize = 0u;
     if (ClearOwner) {
@@ -501,19 +620,36 @@ NTSTATUS BridgeDispatch(PDEVICE_OBJECT DeviceObject, PIRP Irp) {
 
         status = GuardExecute(RegistrationWorker, &context);
         if (!NT_SUCCESS(status)) {
+            if (context.SystemAddress != NULL) {
+                LogStage(context.SystemAddress, (SIZE_T)context.Request.Size,
+                         (uint16_t)AMGER_LOG_ID_REGISTER_MDL,
+                         (uint32_t)status, (uint32_t)context.Request.Size);
+            }
             RegionReleasePartial(&context);
             RegionAbortRegistration();
             return CompleteIrp(Irp, status, 0u);
         }
 
+        LogStage(context.SystemAddress, (SIZE_T)context.Request.Size,
+                 (uint16_t)AMGER_LOG_ID_REGISTER_MDL,
+                 (uint32_t)STATUS_SUCCESS, (uint32_t)context.Request.Size);
+
         if (!RegionCommitRegistration(&context)) {
             /* CLEANUP marked this connection Closing before the worker finished.
              * Release the temporary MDL exactly once and keep the owner recorded
              * for CLOSE. The registration IRP reports the cancellation. */
+            LogStage(context.SystemAddress, (SIZE_T)context.Request.Size,
+                     (uint16_t)AMGER_LOG_ID_REGISTER_COMMIT,
+                     (uint32_t)STATUS_INVALID_DEVICE_STATE,
+                     (uint32_t)context.Request.Size);
             RegionReleasePartial(&context);
             RegionAbortRegistration();
             return CompleteIrp(Irp, STATUS_INVALID_DEVICE_STATE, 0u);
         }
+
+        LogStage(context.SystemAddress, (SIZE_T)context.Request.Size,
+                 (uint16_t)AMGER_LOG_ID_REGISTER_COMMIT,
+                 (uint32_t)STATUS_SUCCESS, (uint32_t)context.Request.Size);
 
         return CompleteIrp(Irp, STATUS_SUCCESS, 0u);
     }
@@ -588,6 +724,14 @@ NTSTATUS BridgeDispatch(PDEVICE_OBJECT DeviceObject, PIRP Irp) {
         KeReleaseSpinLock(&g_regionLock, oldIrql);
         if (!owner) {
             return CompleteIrp(Irp, STATUS_ACCESS_DENIED, 0u);
+        }
+
+        /* Log while the mapping is still valid; after BridgeReleaseResources
+         * the header pages are no longer ours to touch. */
+        if (g_sharedSystemAddress != NULL) {
+            LogStage(g_sharedSystemAddress, g_sharedRegionSize,
+                     (uint16_t)AMGER_LOG_ID_UNLOAD_OWNER,
+                     (uint32_t)STATUS_SUCCESS, 0u);
         }
 
         /* Terminal shutdown first: no new REGISTER or KICK may be admitted

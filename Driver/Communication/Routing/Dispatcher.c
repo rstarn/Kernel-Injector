@@ -1,41 +1,85 @@
 #include "Dispatcher.h"
 
+/* INJECT consumes the full payload contract: a real target, a bounded payload
+ * at the fixed offset, only known option bits, and synchronous completion.
+ * The bridge has already bounds-checked the range inside the registered MDL;
+ * this layer validates the command-level semantics. The mapping engine itself
+ * is linked in a later build, so a valid request reports NOT_IMPLEMENTED. */
+static NTSTATUS ValidateInjectRequest(const AMGER_DISPATCH_CONTEXT* Context) {
+    const AMGER_COMMAND_SNAPSHOT* snapshot = Context->Snapshot;
+
+    if (snapshot->TargetProcessId == 0u ||
+        snapshot->PayloadVirtualAddress == 0u ||
+        snapshot->PayloadSize == 0u ||
+        snapshot->PayloadSize > (uint64_t)AMGER_MAXIMUM_PAYLOAD_SIZE ||
+        snapshot->PayloadSize > (uint64_t)SIZE_MAX ||
+        Context->PayloadSystemAddress == NULL ||
+        Context->PayloadSize != (SIZE_T)snapshot->PayloadSize ||
+        Context->PayloadOffset != (SIZE_T)AMGER_PAYLOAD_OFFSET ||
+        (snapshot->Options & ~AMGER_OPTION_KNOWN_MASK) != 0u ||
+        snapshot->CompletionEventHandle != 0u) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS DispatcherDispatch(
-    const AMGER_COMMAND_SNAPSHOT* Snapshot,
+    AMGER_DISPATCH_CONTEXT* Context,
     uint32_t* OutStatus) {
+    const AMGER_COMMAND_SNAPSHOT* snapshot;
     NTSTATUS status;
 
     if (OutStatus == NULL) {
         return STATUS_INVALID_PARAMETER;
     }
 
-    if (Snapshot == NULL) {
-        status = STATUS_INVALID_PARAMETER;
-    } else if (Snapshot->Magic != AMGER_MAGIC_NUMBER ||
-               Snapshot->Version != AMGER_PROTOCOL_VERSION ||
-               Snapshot->Status != AMGER_STATUS_PENDING) {
+    if (Context == NULL || Context->Snapshot == NULL) {
         status = STATUS_INVALID_PARAMETER;
     } else {
-        switch (Snapshot->Command) {
-        case AMGER_COMMAND_PING:
-            /* PING has no payload or target. Reject nonzero fields rather
-             * than silently accepting data that this command never consumes. */
-            status = (Snapshot->PayloadVirtualAddress == 0u &&
-                      Snapshot->PayloadSize == 0u &&
-                      Snapshot->TargetProcessId == 0u &&
-                      Snapshot->Options == 0u &&
-                      Snapshot->CompletionEventHandle == 0u)
-                         ? STATUS_SUCCESS
-                         : STATUS_INVALID_PARAMETER;
-            break;
-        case AMGER_COMMAND_INJECT:
-        case AMGER_COMMAND_EJECT:
-        case AMGER_COMMAND_STATUS:
-            status = STATUS_NOT_IMPLEMENTED;
-            break;
-        default:
+        snapshot = Context->Snapshot;
+        Context->StageId = (uint16_t)AMGER_LOG_ID_HEADER_VALIDATE;
+
+        if (snapshot->Magic != AMGER_MAGIC_NUMBER ||
+            snapshot->Version != AMGER_PROTOCOL_VERSION ||
+            snapshot->Status != AMGER_STATUS_PENDING) {
             status = STATUS_INVALID_PARAMETER;
-            break;
+        } else {
+            Context->StageId = (uint16_t)AMGER_LOG_ID_COMMAND_DECODE;
+            switch (snapshot->Command) {
+            case AMGER_COMMAND_PING:
+                Context->StageId = (uint16_t)AMGER_LOG_ID_PING;
+                /* PING has no payload or target. Reject nonzero fields rather
+                 * than silently accepting data that this command never uses. */
+                status = (snapshot->PayloadVirtualAddress == 0u &&
+                          snapshot->PayloadSize == 0u &&
+                          snapshot->TargetProcessId == 0u &&
+                          snapshot->Options == 0u &&
+                          snapshot->CompletionEventHandle == 0u)
+                             ? STATUS_SUCCESS
+                             : STATUS_INVALID_PARAMETER;
+                break;
+            case AMGER_COMMAND_INJECT:
+                Context->StageId = (uint16_t)AMGER_LOG_ID_INJECT;
+                status = ValidateInjectRequest(Context);
+                if (NT_SUCCESS(status)) {
+                    /* Request is fully formed and the payload is mapped; the
+                     * injection engine is the next build. */
+                    status = STATUS_NOT_IMPLEMENTED;
+                }
+                break;
+            case AMGER_COMMAND_EJECT:
+                Context->StageId = (uint16_t)AMGER_LOG_ID_EJECT;
+                status = STATUS_NOT_IMPLEMENTED;
+                break;
+            case AMGER_COMMAND_STATUS:
+                Context->StageId = (uint16_t)AMGER_LOG_ID_STATUS_COMMAND;
+                status = STATUS_NOT_IMPLEMENTED;
+                break;
+            default:
+                status = STATUS_INVALID_PARAMETER;
+                break;
+            }
         }
     }
 

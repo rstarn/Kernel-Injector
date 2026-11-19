@@ -4,8 +4,8 @@
  * Contract: no command-line arguments are accepted. The user picks a screen
  * from the main menu; every value shown on those screens is gathered live at
  * the moment the screen renders, never hardcoded.
- *   [1] Inject - asks for a process name, resolves it adaptively
- *                (case-insensitive, extension-optional) and reports the PID.
+ *   [1] Inject - resolves the process name adaptively, reads a DLL payload
+ *                from disk and delivers it to the driver with the target PID.
  *   [2] Status - performs a live device check: responsiveness, a timed PING
  *                round-trip, the configured device name and the connection.
  *                One channel is opened on first use and kept for the session.
@@ -19,7 +19,9 @@
  */
 
 #include <Windows.h>
+#include <cstdio>
 #include <string>
+#include <vector>
 #include <wchar.h>
 
 #include "../Interface/Console.hpp"
@@ -64,29 +66,143 @@ struct Session {
     ChannelClient channel;
 };
 
-void InjectScreen() {
+const wchar_t* StatusName(uint32_t status) {
+#define AMGER_STATUS_NAME_CASE(code, name) case code: return L#name;
+    switch (status) {
+        AMGER_STATUS_TABLE(AMGER_STATUS_NAME_CASE)
+    default:
+        break;
+    }
+#undef AMGER_STATUS_NAME_CASE
+    static wchar_t unknown[32] = {};
+    swprintf_s(unknown, L"UNKNOWN_0x%08X", status);
+    return unknown;
+}
+
+const wchar_t* LogIdName(uint16_t id) {
+#define AMGER_LOG_ID_NAME_CASE(code, name) case code: return L#name;
+    switch (id) {
+        AMGER_LOG_ID_TABLE(AMGER_LOG_ID_NAME_CASE)
+    default:
+        break;
+    }
+#undef AMGER_LOG_ID_NAME_CASE
+    return L"UNKNOWN";
+}
+
+void PrintLogs(const std::vector<ChannelClient::LogRecord>& records) {
+    for (const auto& record : records) {
+        /* The command-stage records start a second visual group after the
+         * validation records. */
+        if (record.Id == AMGER_LOG_ID_PING ||
+            record.Id == AMGER_LOG_ID_INJECT ||
+            record.Id == AMGER_LOG_ID_EJECT ||
+            record.Id == AMGER_LOG_ID_STATUS_COMMAND) {
+            Console::WriteRaw(L"\n");
+        }
+
+        wchar_t detail[48] = {};
+        if (record.Detail != 0u) {
+            swprintf_s(detail, L" [%u]", static_cast<unsigned>(record.Detail));
+        }
+
+        wchar_t line[160] = {};
+        swprintf_s(line, L"Dispatcher[%02u] %s -> 0x%08X (%s)%s",
+                   static_cast<unsigned>(record.Sequence), LogIdName(record.Id),
+                   record.Status, StatusName(record.Status), detail);
+        Console::WriteLine(line, Console::Brush::Gray);
+
+        if (record.Id == AMGER_LOG_ID_REGISTER_COMMIT) {
+            Console::WriteRaw(L"\n");
+        }
+    }
+
+    if (!records.empty()) {
+        Console::WriteRaw(L"\n");
+    }
+}
+
+/* Client.exe lives in Build\Output; the reference DLL is two levels up in
+ * Assets. Deriving from the module path keeps the location relative to the
+ * install regardless of the process working directory. */
+std::wstring ResolveTargetPath() {
+    wchar_t modulePath[MAX_PATH] = {};
+    const DWORD length = GetModuleFileNameW(nullptr, modulePath, MAX_PATH);
+    std::wstring directory(modulePath, length);
+    for (unsigned level = 0u; level < 3u; ++level) {
+        const size_t separator = directory.find_last_of(L"\\/");
+        if (separator == std::wstring::npos) {
+            return L"Assets\\Target.dll";
+        }
+        directory.resize(separator);
+    }
+    return directory + L"\\Assets\\Target.dll";
+}
+
+void InjectScreen(Session& session) {
     Console::ClearScreen();
 
-    const std::wstring raw = Console::ReadLine(L"Process Name: ", Console::Brush::White);
-    const std::wstring query = Trim(raw);
-
+    const std::wstring query = Trim(Console::ReadLine(L"Process Name: ", Console::Brush::White));
     if (query.empty()) {
         Console::WriteLine(L"No process name entered.", Console::Brush::LightYellow);
         return;
     }
 
     DWORD pid = 0u;
-    if (Process::FindIdByName(query, pid)) {
-        Console::WriteText(L"The selected process target connected successfully. ",
-                           Console::Brush::LightGreen);
-        Console::WriteText(L"(PID: ", Console::Brush::Silver);
-        Console::WriteText(std::to_wstring(pid), Console::Brush::LightGreen);
-        Console::WriteText(L")\n", Console::Brush::Silver);
+    if (!Process::FindIdByName(query, pid)) {
+        Console::WriteLine(L"The selected process target was not found.",
+                           Console::Brush::LightRed);
         return;
     }
 
-    Console::WriteLine(L"The selected process target was not found.",
-                       Console::Brush::LightRed);
+    Console::WriteText(L"The selected process target connected successfully. ",
+                       Console::Brush::LightGreen);
+    Console::WriteText(L"(PID: ", Console::Brush::Silver);
+    Console::WriteText(std::to_wstring(pid), Console::Brush::LightGreen);
+    Console::WriteText(L")\n", Console::Brush::Silver);
+    Console::WriteRaw(L"\n");
+
+    const std::wstring path = ResolveTargetPath();
+
+    FILE* file = nullptr;
+    if (_wfopen_s(&file, path.c_str(), L"rb") != 0 || file == nullptr) {
+        Console::WriteLine(L"Target.dll could not be opened.", Console::Brush::LightRed);
+        return;
+    }
+
+    std::vector<unsigned char> payload;
+    unsigned char buffer[4096];
+    size_t read = 0u;
+    while ((read = std::fread(buffer, 1u, sizeof(buffer), file)) > 0u) {
+        payload.insert(payload.end(), buffer, buffer + read);
+    }
+    std::fclose(file);
+
+    if (payload.empty()) {
+        Console::WriteLine(L"DLL file is empty.", Console::Brush::LightRed);
+        return;
+    }
+
+    if (!session.channel.Connected() && !session.channel.Connect()) {
+        Console::WriteLine(L"Device unavailable. Map the driver first.", Console::Brush::LightRed);
+        return;
+    }
+
+    const uint32_t status = session.channel.Inject(pid, 0u, payload.data(), payload.size());
+    PrintLogs(session.channel.DrainLogs());
+    if (status == 0u) {
+        Console::WriteLine(L"Payload accepted by the driver.", Console::Brush::LightGreen);
+    } else if (status == AMGER_CLIENT_REGION_FAILED) {
+        Console::WriteLine(L"Device rejected the payload region.", Console::Brush::LightRed);
+    } else if (status == AMGER_CLIENT_KICK_FAILED) {
+        Console::WriteLine(L"Device did not answer the command.", Console::Brush::LightRed);
+    } else if (status == AMGER_STATUS_PENDING) {
+        Console::WriteLine(L"Payload could not be delivered.", Console::Brush::LightRed);
+    } else {
+        wchar_t text[96] = {};
+        swprintf_s(text, L"Driver status: 0x%08X (%s)", status, StatusName(status));
+        Console::WriteLine(text, Console::Brush::LightRed);
+    }
 }
 
 void StatusScreen(Session& session) {
@@ -110,6 +226,8 @@ void StatusScreen(Session& session) {
                                static_cast<double>(frequency.QuadPart);
         }
     }
+
+    PrintLogs(client.DrainLogs());
 
     const wchar_t* const stateText = connected && pingOk ? L"Operational"
                                    : connected           ? L"Degraded"
@@ -189,7 +307,7 @@ int wmain() {
         const std::wstring input = Trim(Console::ReadLine(L"Input: ", Console::Brush::Orange));
 
         if (input == L"1") {
-            InjectScreen();
+            InjectScreen(session);
             Console::WaitForEnter();
             continue;
         }

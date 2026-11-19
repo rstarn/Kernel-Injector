@@ -47,6 +47,67 @@
 #define AMGER_OPTION_PROCESS_PROTECTION_MODE      0x00000001u
 #define AMGER_OPTION_VIRTUAL_MACHINE_PROTECT_WAIT 0x00000002u
 #define AMGER_OPTION_HEADER_ERASURE               0x00000004u
+#define AMGER_OPTION_KNOWN_MASK (AMGER_OPTION_PROCESS_PROTECTION_MODE | \
+                                 AMGER_OPTION_VIRTUAL_MACHINE_PROTECT_WAIT | \
+                                 AMGER_OPTION_HEADER_ERASURE)
+
+/* Payload bytes start immediately after the fixed header in the region. */
+#define AMGER_PAYLOAD_OFFSET AMGER_COMMAND_HEADER_SIZE
+
+/* Dispatcher log identifiers, one per validation/execution stage. */
+#define AMGER_LOG_ID_HEADER_VALIDATE   1u
+#define AMGER_LOG_ID_COMMAND_DECODE    2u
+#define AMGER_LOG_ID_PAYLOAD_RANGE     3u
+#define AMGER_LOG_ID_PING              4u
+#define AMGER_LOG_ID_INJECT            5u
+#define AMGER_LOG_ID_EJECT             6u
+#define AMGER_LOG_ID_STATUS_COMMAND    7u
+#define AMGER_LOG_ID_RESULT            8u
+#define AMGER_LOG_ID_REGISTER_MDL      9u
+#define AMGER_LOG_ID_REGISTER_COMMIT  10u
+#define AMGER_LOG_ID_CLEANUP_DRAIN    11u
+#define AMGER_LOG_ID_CLOSE_RECLAIM    12u
+#define AMGER_LOG_ID_UNLOAD_OWNER     13u
+#define AMGER_LOG_ID_SNAPSHOT_RETRY   14u
+
+/* Reserved[0..3] is the seqlock. The log ring lives in a dedicated tail area
+ * at the end of the registered region, so it cannot be overwritten by payload
+ * bytes and holds enough records for several commands at once. */
+#define AMGER_LOG_AREA_SIZE    256u
+#define AMGER_LOG_ENTRY_COUNT  15u
+
+/* X-macro tables. Both the kernel and client generate their own lookup from
+ * these, so a status is always rendered from the value actually returned. */
+#define AMGER_STATUS_TABLE(X)                                    \
+    X(0x00000000u, STATUS_SUCCESS)                               \
+    X(0x00000102u, STATUS_TIMEOUT)                               \
+    X(0x80000011u, STATUS_DEVICE_BUSY)                           \
+    X(0xC0000001u, STATUS_UNSUCCESSFUL)                          \
+    X(0xC0000002u, STATUS_NOT_IMPLEMENTED)                       \
+    X(0xC0000005u, STATUS_ACCESS_VIOLATION)                      \
+    X(0xC000000Du, STATUS_INVALID_PARAMETER)                     \
+    X(0xC0000010u, STATUS_INVALID_DEVICE_REQUEST)                \
+    X(0xC0000022u, STATUS_ACCESS_DENIED)                         \
+    X(0xC0000034u, STATUS_OBJECT_NAME_NOT_FOUND)                 \
+    X(0xC000009Au, STATUS_INSUFFICIENT_RESOURCES)                \
+    X(0xC0000184u, STATUS_INVALID_DEVICE_STATE)                  \
+    X(0xC000022Du, STATUS_RETRY)
+
+#define AMGER_LOG_ID_TABLE(X)                                    \
+    X(AMGER_LOG_ID_HEADER_VALIDATE,  HEADER_VALIDATE)             \
+    X(AMGER_LOG_ID_COMMAND_DECODE,   COMMAND_DECODE)              \
+    X(AMGER_LOG_ID_PAYLOAD_RANGE,    PAYLOAD_RANGE)               \
+    X(AMGER_LOG_ID_PING,             PING)                        \
+    X(AMGER_LOG_ID_INJECT,           INJECT)                      \
+    X(AMGER_LOG_ID_EJECT,            EJECT)                       \
+    X(AMGER_LOG_ID_STATUS_COMMAND,   STATUS_COMMAND)              \
+    X(AMGER_LOG_ID_RESULT,           RESULT)                      \
+    X(AMGER_LOG_ID_REGISTER_MDL,     REGISTER_MDL)                \
+    X(AMGER_LOG_ID_REGISTER_COMMIT,  REGISTER_COMMIT)             \
+    X(AMGER_LOG_ID_CLEANUP_DRAIN,    CLEANUP_DRAIN)               \
+    X(AMGER_LOG_ID_CLOSE_RECLAIM,    CLOSE_RECLAIM)               \
+    X(AMGER_LOG_ID_UNLOAD_OWNER,     UNLOAD_OWNER)                \
+    X(AMGER_LOG_ID_SNAPSHOT_RETRY,   SNAPSHOT_RETRY)
 
 /* Maximum payload capacity reserved by the protocol for future work. */
 #define AMGER_MAXIMUM_PAYLOAD_SIZE (64u * 1024u * 1024u)
@@ -121,6 +182,21 @@ typedef struct _AMGER_HEADER_CONTROL {
     uint8_t  Remainder[60];
 } AMGER_HEADER_CONTROL, * PAMGER_HEADER_CONTROL;
 
+/* One dispatcher log record. Sequence is absolute so the client can display
+ * only entries newer than the last one it saw. */
+typedef struct _AMGER_LOG_ENTRY {
+    uint32_t Sequence;
+    uint16_t Id;
+    uint16_t Reserved;
+    uint32_t Status;
+    uint32_t Detail;
+} AMGER_LOG_ENTRY, * PAMGER_LOG_ENTRY;
+
+typedef struct _AMGER_LOG_RING {
+    uint32_t Sequence;
+    AMGER_LOG_ENTRY Entries[AMGER_LOG_ENTRY_COUNT];
+} AMGER_LOG_RING, * PAMGER_LOG_RING;
+
 /*
  * AMGER_COMMAND_SNAPSHOT - kernel-local copy of the command input.
  * Not part of the wire layout; used so dispatch never reads mutable user memory.
@@ -161,6 +237,12 @@ AMGER_STATIC_ASSERT(sizeof(AMGER_HEADER_CONTROL) == 64,
                     "AMGER_HEADER_CONTROL must cover Reserved exactly");
 AMGER_STATIC_ASSERT(sizeof(AMGER_SHARED_REGION_REQUEST) == 16,
                     "AMGER_SHARED_REGION_REQUEST must be 16 bytes");
+AMGER_STATIC_ASSERT(sizeof(AMGER_LOG_ENTRY) == 16,
+                    "AMGER_LOG_ENTRY must be 16 bytes");
+AMGER_STATIC_ASSERT(sizeof(AMGER_LOG_RING) == 244,
+                    "AMGER_LOG_RING must be 244 bytes");
+AMGER_STATIC_ASSERT(sizeof(AMGER_LOG_RING) <= AMGER_LOG_AREA_SIZE,
+                    "log ring must fit inside the log area");
 AMGER_STATIC_ASSERT(offsetof(AMGER_COMMAND_HEADER, Magic) == 0,
                     "Magic offset mismatch");
 AMGER_STATIC_ASSERT(offsetof(AMGER_COMMAND_HEADER, Version) == 4,
