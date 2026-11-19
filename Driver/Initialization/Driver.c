@@ -15,25 +15,21 @@
 #include "Startup/Bootstrap.h"
 #include "../Communication/Endpoint/Bridge.h"
 
-static NTSTATUS g_lastUnloadStatus = STATUS_SUCCESS;
-
 static VOID DriverUnload(PDRIVER_OBJECT DriverObject) {
     /* Enter terminal shutdown first so no REGISTER/KICK can be admitted while
      * the region and bootstrap resources are being torn down. */
     (void)BridgeBeginShutdown();
     const NTSTATUS regionStatus = BridgeReleaseResources();
-    const NTSTATUS cleanupStatus = BootstrapDestroy();
+
+    /* BootstrapDestroy reports its own failures to the kernel error log. */
+    (void)BootstrapDestroy();
 
     UNREFERENCED_PARAMETER(DriverObject);
 
-    /* DriverUnload cannot return a status. BootstrapDestroy logs its own
-     * failures; Bridge release failures have no IRP channel here, so post them
-     * to the kernel error log instead of only keeping a private global. */
+    /* DriverUnload cannot return a status. Bridge release failures have no IRP
+     * channel here, so post them to the kernel error log. */
     if (!NT_SUCCESS(regionStatus)) {
-        g_lastUnloadStatus = regionStatus;
         BootstrapReportCleanupFailure(regionStatus);
-    } else if (!NT_SUCCESS(cleanupStatus)) {
-        g_lastUnloadStatus = cleanupStatus;
     }
 }
 
@@ -50,11 +46,8 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath) 
 
     status = BridgeRegisterIoControl(DriverObject, deviceObject);
     if (!NT_SUCCESS(status)) {
-        /* Preserve the original failure; record cleanup failure separately. */
-        const NTSTATUS cleanupStatus = BootstrapDestroy();
-        if (!NT_SUCCESS(cleanupStatus)) {
-            g_lastUnloadStatus = cleanupStatus;
-        }
+        /* Preserve the original failure; BootstrapDestroy logs cleanup failure. */
+        (void)BootstrapDestroy();
         return status;
     }
 
