@@ -77,7 +77,7 @@ static BOOLEAN g_active = FALSE;
 /* Serializes symbolic-link deletion. All callers run at PASSIVE_LEVEL; the
  * mutex is held only around object-manager calls, never a spin lock, and the
  * interlocked link flag distinguishes "absent" from "deletion in progress"
- * across concurrent KICK / CLOSE / unload teardown. */
+ * across concurrent CLOSE / unload teardown. */
 static KMUTEX g_discoveryMutex;
 
 /* TRUE only once KeInitializeMutex has run. DriverEntry can fail before

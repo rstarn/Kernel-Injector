@@ -69,6 +69,19 @@
 #define AMGER_LOG_ID_CLOSE_RECLAIM    12u
 #define AMGER_LOG_ID_UNLOAD_OWNER     13u
 #define AMGER_LOG_ID_SNAPSHOT_RETRY   14u
+#define AMGER_LOG_ID_PAYLOAD_IMAGE    15u
+#define AMGER_LOG_ID_INJECT_PROCESS   16u
+#define AMGER_LOG_ID_INJECT_MAPPING   17u
+#define AMGER_LOG_ID_INJECT_THREAD    18u
+
+/* Reserved[0..3] is the seqlock; Reserved[8..15] carries a 64-bit result
+ * value written by the driver (e.g. the injected module base). The four
+ * bytes before it are alignment padding. */
+typedef struct _AMGER_RESULT_CONTROL {
+    uint32_t Sequence;
+    uint64_t ResultValue;
+    uint8_t Remainder[48];
+} AMGER_RESULT_CONTROL, * PAMGER_RESULT_CONTROL;
 
 /* Reserved[0..3] is the seqlock. The log ring lives in a dedicated tail area
  * at the end of the registered region, so it cannot be overwritten by payload
@@ -107,7 +120,11 @@
     X(AMGER_LOG_ID_CLEANUP_DRAIN,    CLEANUP_DRAIN)               \
     X(AMGER_LOG_ID_CLOSE_RECLAIM,    CLOSE_RECLAIM)               \
     X(AMGER_LOG_ID_UNLOAD_OWNER,     UNLOAD_OWNER)                \
-    X(AMGER_LOG_ID_SNAPSHOT_RETRY,   SNAPSHOT_RETRY)
+    X(AMGER_LOG_ID_SNAPSHOT_RETRY,   SNAPSHOT_RETRY)                 \
+    X(AMGER_LOG_ID_PAYLOAD_IMAGE,    PAYLOAD_IMAGE)                  \
+    X(AMGER_LOG_ID_INJECT_PROCESS,   INJECT_PROCESS)                 \
+    X(AMGER_LOG_ID_INJECT_MAPPING,   INJECT_MAPPING)                 \
+    X(AMGER_LOG_ID_INJECT_THREAD,    INJECT_THREAD)
 
 /* Maximum payload capacity reserved by the protocol for future work. */
 #define AMGER_MAXIMUM_PAYLOAD_SIZE (64u * 1024u * 1024u)
@@ -118,6 +135,9 @@
 
 /* Region size used by the currently implemented PING-only commands. */
 #define AMGER_COMMAND_REGION_SIZE AMGER_COMMAND_HEADER_SIZE
+
+/* Every registered region carries the command header and the log tail. */
+#define AMGER_MINIMUM_REGION_SIZE (AMGER_COMMAND_HEADER_SIZE + AMGER_LOG_AREA_SIZE)
 
 /* Seqlock fields inside AMGER_COMMAND_HEADER.Reserved. */
 #define AMGER_SEQUENCE_OFFSET 48u
@@ -235,6 +255,8 @@ AMGER_STATIC_ASSERT(sizeof(AMGER_COMMAND_HEADER) == 128,
                     "AMGER_COMMAND_HEADER must be 128 bytes");
 AMGER_STATIC_ASSERT(sizeof(AMGER_HEADER_CONTROL) == 64,
                     "AMGER_HEADER_CONTROL must cover Reserved exactly");
+AMGER_STATIC_ASSERT(sizeof(AMGER_RESULT_CONTROL) == 64,
+                    "AMGER_RESULT_CONTROL must cover Reserved exactly");
 AMGER_STATIC_ASSERT(sizeof(AMGER_SHARED_REGION_REQUEST) == 16,
                     "AMGER_SHARED_REGION_REQUEST must be 16 bytes");
 AMGER_STATIC_ASSERT(sizeof(AMGER_LOG_ENTRY) == 16,

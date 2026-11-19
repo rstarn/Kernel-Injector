@@ -139,6 +139,8 @@ cl %AMGER_DRIVER_FLAGS% /c /Fo"%AMGER_OBJECTS%\Bridge.obj" "%AMGER_ROOT%\Driver\
 if errorlevel 1 goto :Failed
 cl %AMGER_DRIVER_FLAGS% /c /Fo"%AMGER_OBJECTS%\Dispatcher.obj" "%AMGER_ROOT%\Driver\Communication\Routing\Dispatcher.c"
 if errorlevel 1 goto :Failed
+cl %AMGER_DRIVER_FLAGS% /c /Fo"%AMGER_OBJECTS%\Injector.obj" "%AMGER_ROOT%\Driver\Execution\Injector.c"
+if errorlevel 1 goto :Failed
 cl %AMGER_DRIVER_FLAGS% /c /Fo"%AMGER_OBJECTS%\Guard.obj" "%AMGER_ROOT%\Driver\Utilities\Guard.c"
 if errorlevel 1 goto :Failed
 
@@ -151,6 +153,7 @@ link /nologo /driver /subsystem:native /machine:x64 /entry:GsDriverEntry /nodefa
     "%AMGER_OBJECTS%\Bootstrap.obj" ^
     "%AMGER_OBJECTS%\Bridge.obj" ^
     "%AMGER_OBJECTS%\Dispatcher.obj" ^
+    "%AMGER_OBJECTS%\Injector.obj" ^
     "%AMGER_OBJECTS%\Guard.obj" ^
     /libpath:"%AMGER_KM_LIB%" ntoskrnl.lib hal.lib BufferOverflowK.lib
 if errorlevel 1 goto :Failed

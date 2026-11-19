@@ -8,7 +8,8 @@ ChannelClient::ChannelClient()
       sharedRegion(nullptr),
       header(nullptr),
       regionSize(0u),
-      lastLogSequence(0u) {
+      lastLogSequence(0u),
+      resultValue(0u) {
 }
 
 ChannelClient::~ChannelClient() {
@@ -203,7 +204,16 @@ uint32_t ChannelClient::Inject(uint32_t targetProcessId,
     if (status == AMGER_STATUS_PENDING) {
         return AMGER_CLIENT_KICK_FAILED;
     }
+
+    const volatile AMGER_RESULT_CONTROL* result =
+        reinterpret_cast<volatile AMGER_RESULT_CONTROL*>(&header->Reserved[0]);
+    resultValue = result->ResultValue;
     return status;
+}
+
+uint64_t ChannelClient::ResultValue() const {
+    std::lock_guard<std::mutex> lock(operationMutex);
+    return resultValue;
 }
 
 std::vector<ChannelClient::LogRecord> ChannelClient::DrainLogs() {
@@ -287,4 +297,5 @@ void ChannelClient::DisconnectUnlocked() {
     }
     regionSize = 0u;
     lastLogSequence = 0u;
+    resultValue = 0u;
 }

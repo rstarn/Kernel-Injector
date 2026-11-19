@@ -20,6 +20,7 @@
 
 #include <Windows.h>
 #include <cstdio>
+#include <iostream>
 #include <string>
 #include <vector>
 #include <wchar.h>
@@ -203,6 +204,24 @@ void InjectScreen(Session& session) {
         swprintf_s(text, L"Driver status: 0x%08X (%s)", status, StatusName(status));
         Console::WriteLine(text, Console::Brush::LightRed);
     }
+
+    Console::WriteRaw(L"\n");
+    Console::WriteText(L"Ready to inject? (", Console::Brush::Silver);
+    Console::WriteText(L"Y", Console::Brush::LightGreen);
+    Console::WriteText(L"/", Console::Brush::Gray);
+    Console::WriteText(L"N", Console::Brush::LightRed);
+    Console::WriteText(L"): ", Console::Brush::Silver);
+    const std::wstring answer = Trim(Console::ReadLine(L"", Console::Brush::Silver));
+    if (!answer.empty() && (answer.front() == L'Y' || answer.front() == L'y')) {
+        Console::WriteLine(L"Delegating to the injection engine...", Console::Brush::LightYellow);
+    }
+
+    const uint64_t remoteBase = session.channel.ResultValue();
+    if (remoteBase != 0u) {
+        wchar_t base[64] = {};
+        swprintf_s(base, L"Remote base: 0x%016llX", remoteBase);
+        Console::WriteLine(base, Console::Brush::LightCyan);
+    }
 }
 
 void StatusScreen(Session& session) {
@@ -305,6 +324,9 @@ int wmain() {
     for (;;) {
         ShowMainScreen();
         const std::wstring input = Trim(Console::ReadLine(L"Input: ", Console::Brush::Orange));
+        if (std::wcin.eof()) {
+            break;
+        }
 
         if (input == L"1") {
             InjectScreen(session);

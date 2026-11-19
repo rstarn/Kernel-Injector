@@ -45,8 +45,8 @@ NTSTATUS BridgeDispatch(
  * Contract: enters the terminal shutdown state atomically under g_regionLock
  * and marks the connection closing. Once set, shutdown is never cleared, so no
  * subsequent REGISTER or KICK is admitted even if bootstrap teardown fails and
- * must be retried. Idempotent. Called only by DriverUnload before resource
- * release; client CLOSE never enters terminal shutdown.
+ * must be retried. Idempotent. Called by DriverUnload and the owner-only
+ * UNLOAD IOCTL before resource release; client CLOSE never enters shutdown.
  * Inputs: none. Outputs: STATUS_SUCCESS. Failure modes: none.
  */
 NTSTATUS BridgeBeginShutdown(VOID);
@@ -66,7 +66,7 @@ NTSTATUS BridgeReleaseResources(VOID);
 /*
  * Contract: transitions the owner connection to Closing, rejects new
  * operations, and releases its MDL after active operations drain. The owner
- * file object remains recorded so IRP_MJ_CLOSE can remove the device. A bounded
+ * file object remains recorded so IRP_MJ_CLOSE can identify the connection. A bounded
  * wait keeps CLEANUP from blocking indefinitely; on timeout the state remains
  * Closing and the MDL is retained for CLOSE / unload.
  * Inputs: FileObject from the CLEANUP IRP stack location.

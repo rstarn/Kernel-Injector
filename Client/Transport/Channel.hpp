@@ -48,6 +48,8 @@ public:
     bool Unload();
     void Disconnect();
 
+    uint64_t ResultValue() const;
+
     /* Returns dispatcher records newer than the last ones displayed. */
     std::vector<LogRecord> DrainLogs();
 
@@ -72,4 +74,5 @@ private:
     volatile AMGER_COMMAND_HEADER* header;
     size_t regionSize;
     uint32_t lastLogSequence;
+    uint64_t resultValue;
 };

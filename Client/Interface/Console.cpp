@@ -120,7 +120,7 @@ void ApplyBrush(Brush brush) {
     }
 }
 
-/* Compact 5-row block wordmark for AMGER CLIENT. */
+/* Block wordmark for AMGER CLIENT; width is derived from the widest line. */
 
 void PrintGradientLine(const std::wstring& line, size_t width) {
     const Rgb orange(BrushRgb(Brush::Orange));

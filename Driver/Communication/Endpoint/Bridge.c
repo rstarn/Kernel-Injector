@@ -1,4 +1,3 @@
-
 #include "Bridge.h"
 
 #include "../Routing/Dispatcher.h"
@@ -47,8 +46,6 @@ static BOOLEAN g_connectionClosing = FALSE;
  * g_regionLock, when the device and its symbolic link are being destroyed.
  * Client exit never sets it: the device must stay openable by name. */
 static BOOLEAN g_terminalShutdown = FALSE;
-
-
 
 static NTSTATUS CompleteIrp(PIRP Irp, NTSTATUS status, ULONG_PTR information) {
     Irp->IoStatus.Status = status;
@@ -182,7 +179,7 @@ static BOOLEAN RegionBeginOperation(
                 !g_connectionClosing &&
                 g_regionState == RegionStateRegistered &&
                 g_sharedSystemAddress != NULL &&
-                g_sharedRegionSize >= sizeof(AMGER_COMMAND_HEADER));
+                g_sharedRegionSize >= AMGER_MINIMUM_REGION_SIZE);
     if (accepted) {
         InterlockedIncrement(&g_activeOperations);
         *OutHeader = (volatile AMGER_COMMAND_HEADER*)g_sharedSystemAddress;
@@ -215,7 +212,7 @@ static NTSTATUS RegistrationWorker(PVOID ContextParameter) {
     context->Request = *context->RequestPointer;
 
     if (context->Request.VirtualAddress == 0u ||
-        context->Request.Size < (uint64_t)sizeof(AMGER_COMMAND_HEADER) ||
+        context->Request.Size < (uint64_t)AMGER_MINIMUM_REGION_SIZE ||
         context->Request.Size > (uint64_t)AMGER_SHARED_REGION_SIZE) {
         return STATUS_INVALID_PARAMETER;
     }
@@ -285,24 +282,26 @@ static NTSTATUS CaptureSnapshot(
  * into a kernel read/write primitive. Zero size means "no payload". */
 static NTSTATUS ValidatePayloadRange(const AMGER_COMMAND_SNAPSHOT* Snapshot) {
     uint64_t regionStart;
-    uint64_t regionEnd;
+    uint64_t payloadEnd;
     uint64_t payloadStart;
 
     if (Snapshot->PayloadSize == 0u) {
         return STATUS_SUCCESS;
     }
     if (g_sharedUserAddress == NULL || g_sharedSystemAddress == NULL ||
-        g_sharedRegionSize < sizeof(AMGER_COMMAND_HEADER)) {
+        g_sharedRegionSize < AMGER_MINIMUM_REGION_SIZE) {
         return STATUS_INVALID_DEVICE_STATE;
     }
 
     regionStart = (uint64_t)(uintptr_t)g_sharedUserAddress;
-    regionEnd = regionStart + (uint64_t)g_sharedRegionSize;
+    /* The log tail is never part of the payload. */
+    payloadEnd = regionStart + (uint64_t)g_sharedRegionSize - AMGER_LOG_AREA_SIZE;
     payloadStart = Snapshot->PayloadVirtualAddress;
 
     /* Subtraction form avoids overflow from a hostile PayloadSize. */
-    if (payloadStart < regionStart || payloadStart > regionEnd ||
-        Snapshot->PayloadSize > regionEnd - payloadStart) {
+    if (payloadStart < regionStart + AMGER_PAYLOAD_OFFSET ||
+        payloadStart > payloadEnd ||
+        Snapshot->PayloadSize > payloadEnd - payloadStart) {
         return STATUS_INVALID_PARAMETER;
     }
 
@@ -381,6 +380,7 @@ static NTSTATUS KickWorker(PVOID ContextParameter) {
     dispatch.PayloadSize = 0u;
     dispatch.PayloadOffset = 0u;
     dispatch.StageId = (uint16_t)AMGER_LOG_ID_COMMAND_DECODE;
+    dispatch.ResultValue = 0u;
     if (snapshot.PayloadSize != 0u) {
         const SIZE_T offset = (SIZE_T)(snapshot.PayloadVirtualAddress -
                                        (uint64_t)(uintptr_t)g_sharedUserAddress);
@@ -390,6 +390,17 @@ static NTSTATUS KickWorker(PVOID ContextParameter) {
     }
 
     status = DispatcherDispatch(&dispatch, &context->Status);
+
+    /* Commands that produce data publish it in Reserved[8..15]; the seqlock
+     * word at Reserved[0..3] is untouched. */
+    if (dispatch.ResultValue != 0u) {
+        PAMGER_RESULT_CONTROL result =
+            (PAMGER_RESULT_CONTROL)&context->Header->Reserved[0];
+        MemoryBarrier();
+        result->ResultValue = dispatch.ResultValue;
+        MemoryBarrier();
+    }
+
     LogStage(g_sharedSystemAddress, g_sharedRegionSize,
              dispatch.StageId, (uint32_t)status, 0u);
     LogStage(g_sharedSystemAddress, g_sharedRegionSize,
