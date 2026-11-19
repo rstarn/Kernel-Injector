@@ -5,6 +5,3 @@ CompileFlags:
     - -fms-extensions
     - -fms-compatibility
     - -fms-compatibility-version=19.51
-Diagnostics:
-  Suppress:
-    - unused-includes
