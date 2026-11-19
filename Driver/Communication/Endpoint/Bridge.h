@@ -27,6 +27,9 @@ NTSTATUS BridgeRegisterIoControl(
     PDRIVER_OBJECT DriverObject,
     PDEVICE_OBJECT DeviceObject);
 
+/* Installs the per-machine IOCTL codes and command magic. */
+VOID BridgeConfigure(ULONG64 MachineHash);
+
 /*
  * Contract: services REGISTER_SHARED_REGION, KICK and UNLOAD with explicit
  * completion. UNLOAD is owner-only and removes the device and its symbolic

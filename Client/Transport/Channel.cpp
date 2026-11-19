@@ -2,6 +2,41 @@
 
 #include <algorithm>
 #include <cstring>
+#include <cwchar>
+
+/* Same derivation as Bootstrap.c. Every externally visible identifier comes
+ * from this hash; no product string appears in the device name. */
+static uint64_t ReadMachineHash() {
+    WCHAR guid[128] = { 0 };
+    DWORD length = sizeof(guid);
+    const LSTATUS status = RegGetValueW(
+        HKEY_LOCAL_MACHINE,
+        L"SOFTWARE\\Microsoft\\Cryptography",
+        L"MachineGuid",
+        RRF_RT_REG_SZ,
+        nullptr,
+        guid,
+        &length);
+
+    if (status == ERROR_SUCCESS && length >= sizeof(WCHAR)) {
+        return AmgerMachineHash(guid, static_cast<size_t>(length / sizeof(WCHAR)));
+    }
+    return AmgerMachineHash(AMGER_FALLBACK_GUID,
+                            wcslen(AMGER_FALLBACK_GUID));
+}
+
+static std::wstring BuildDevicePath(uint64_t hash) {
+    WCHAR buffer[64] = { 0 };
+    wcscpy_s(buffer, L"\\\\.\\");
+    AmgerAppendName(buffer, 64u, hash);
+    return buffer;
+}
+
+static ULONG DerivedIoctl(uint32_t functionBase, uint64_t hash) {
+    return CTL_CODE(AMGER_DEVICE_TYPE,
+                    AmgerIoctlFunction(functionBase, hash),
+                    AMGER_IOCTL_METHOD, AMGER_IOCTL_ACCESS);
+}
 
 ChannelClient::ChannelClient()
     : deviceHandle(INVALID_HANDLE_VALUE),
@@ -9,7 +44,9 @@ ChannelClient::ChannelClient()
       header(nullptr),
       regionSize(0u),
       lastLogSequence(0u),
-      resultValue(0u) {
+      resultValue(0u),
+      machineHash(ReadMachineHash()),
+      devicePath(BuildDevicePath(machineHash)) {
 }
 
 ChannelClient::~ChannelClient() {
@@ -17,6 +54,7 @@ ChannelClient::~ChannelClient() {
 }
 
 void ChannelClient::WriteCommand(volatile AMGER_COMMAND_HEADER* header,
+                                 uint32_t magic,
                                  uint32_t command,
                                  uint64_t payloadVirtualAddress,
                                  uint64_t payloadSize,
@@ -32,7 +70,7 @@ void ChannelClient::WriteCommand(volatile AMGER_COMMAND_HEADER* header,
     InterlockedExchange(sequenceAddress, static_cast<long>(sequence));
     MemoryBarrier();
 
-    header->Magic = AMGER_MAGIC_NUMBER;
+    header->Magic = magic;
     header->Version = AMGER_PROTOCOL_VERSION;
     header->Command = command;
     header->Status = AMGER_STATUS_PENDING;
@@ -57,7 +95,7 @@ bool ChannelClient::Connect(size_t requestedSize) {
 }
 
 bool ChannelClient::ConnectUnlocked(size_t requestedSize) {
-    if (requestedSize < sizeof(AMGER_COMMAND_HEADER) ||
+    if (requestedSize < AMGER_MINIMUM_REGION_SIZE ||
         requestedSize > AMGER_SHARED_REGION_SIZE) {
         return false;
     }
@@ -69,7 +107,7 @@ bool ChannelClient::ConnectUnlocked(size_t requestedSize) {
         DisconnectUnlocked();
 
         deviceHandle = CreateFileW(
-            AMGER_USER_DEVICE,
+            devicePath.c_str(),
             GENERIC_READ | GENERIC_WRITE,
             0u,
             nullptr,
@@ -99,7 +137,7 @@ bool ChannelClient::ConnectUnlocked(size_t requestedSize) {
         DWORD bytesReturned = 0u;
         const BOOL ioctlOk = DeviceIoControl(
             deviceHandle,
-            AMGER_IOCTL_REGISTER_SHARED_REGION,
+            DerivedIoctl(AMGER_IOCTL_FUNCTION_REGISTER, machineHash),
             &request,
             sizeof(request),
             nullptr,
@@ -132,18 +170,38 @@ bool ChannelClient::Connected() const {
     return header != nullptr;
 }
 
+bool ChannelClient::ProbeDevice() const {
+    /* Zero desired access is a pure existence probe: it asks the object
+     * manager to resolve the derived name without requesting read or write
+     * rights, and produces an IRP_MJ_CREATE/CLOSE pair that changes no driver
+     * state. A stale cached header in Connected() cannot substitute for this. */
+    HANDLE probe = CreateFileW(
+        devicePath.c_str(),
+        0u,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr);
+    if (probe == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    CloseHandle(probe);
+    return true;
+}
+
 bool ChannelClient::Ping() {
     std::lock_guard<std::mutex> lock(operationMutex);
     if (deviceHandle == INVALID_HANDLE_VALUE || sharedRegion == nullptr || header == nullptr) {
         return false;
     }
 
-    WriteCommand(header, AMGER_COMMAND_PING, 0u, 0u, 0u, 0u);
+    WriteCommand(header, AmgerMagicValue(machineHash), AMGER_COMMAND_PING, 0u, 0u, 0u, 0u);
 
     DWORD bytesReturned = 0u;
     const BOOL kickOk = DeviceIoControl(
         deviceHandle,
-        AMGER_IOCTL_KICK,
+        DerivedIoctl(AMGER_IOCTL_FUNCTION_KICK, machineHash),
         nullptr,
         0u,
         nullptr,
@@ -180,6 +238,7 @@ uint32_t ChannelClient::Inject(uint32_t targetProcessId,
     std::memcpy(payloadTarget, payload, payloadSize);
 
     WriteCommand(header,
+                 AmgerMagicValue(machineHash),
                  AMGER_COMMAND_INJECT,
                  reinterpret_cast<uint64_t>(payloadTarget),
                  static_cast<uint64_t>(payloadSize),
@@ -189,7 +248,7 @@ uint32_t ChannelClient::Inject(uint32_t targetProcessId,
     DWORD bytesReturned = 0u;
     (void)DeviceIoControl(
         deviceHandle,
-        AMGER_IOCTL_KICK,
+        DerivedIoctl(AMGER_IOCTL_FUNCTION_KICK, machineHash),
         nullptr,
         0u,
         nullptr,
@@ -214,6 +273,10 @@ uint32_t ChannelClient::Inject(uint32_t targetProcessId,
 uint64_t ChannelClient::ResultValue() const {
     std::lock_guard<std::mutex> lock(operationMutex);
     return resultValue;
+}
+
+const std::wstring& ChannelClient::DevicePath() const {
+    return devicePath;
 }
 
 std::vector<ChannelClient::LogRecord> ChannelClient::DrainLogs() {
@@ -268,7 +331,7 @@ bool ChannelClient::Unload() {
     DWORD bytesReturned = 0u;
     const BOOL unloadOk = DeviceIoControl(
         deviceHandle,
-        AMGER_IOCTL_UNLOAD,
+        DerivedIoctl(AMGER_IOCTL_FUNCTION_UNLOAD, machineHash),
         nullptr,
         0u,
         nullptr,

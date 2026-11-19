@@ -205,6 +205,9 @@ void InjectScreen(Session& session) {
         Console::WriteLine(text, Console::Brush::LightRed);
     }
 
+    /* Keep this prompt outside the status branches: INJECT currently returns
+     * STATUS_NOT_IMPLEMENTED until the mapping engine is linked, so a prompt
+     * gated on success would never be reachable. */
     Console::WriteRaw(L"\n");
     Console::WriteText(L"Ready to inject? (", Console::Brush::Silver);
     Console::WriteText(L"Y", Console::Brush::LightGreen);
@@ -213,7 +216,7 @@ void InjectScreen(Session& session) {
     Console::WriteText(L"): ", Console::Brush::Silver);
     const std::wstring answer = Trim(Console::ReadLine(L"", Console::Brush::Silver));
     if (!answer.empty() && (answer.front() == L'Y' || answer.front() == L'y')) {
-        Console::WriteLine(L"Delegating to the injection engine...", Console::Brush::LightYellow);
+        Console::WriteLine(L"\nDelegating to the injection engine...", Console::Brush::LightYellow);
     }
 
     const uint64_t remoteBase = session.channel.ResultValue();
@@ -283,7 +286,8 @@ void StatusScreen(Session& session) {
     row(L"State:", stateText, stateBrush);
     row(L"Ping:", pingText, pingBrush);
     Console::WriteRaw(L"\n");
-    row(L"Device Name:", AMGER_USER_DEVICE, Console::Brush::LightCyan);
+    row(L"Device Name:", connected ? client.DevicePath() : L"N/A",
+        connected ? Console::Brush::LightCyan : Console::Brush::Gray);
     row(L"Device Connection:", connected ? L"Connected" : L"Not Connected",
         connected ? Console::Brush::LightGreen : Console::Brush::LightRed);
 }
@@ -292,12 +296,29 @@ void UnloadScreen(Session& session) {
     Console::ClearScreen();
 
     ChannelClient& client = session.channel;
-    const bool connected = client.Connected() || client.Connect();
+
+    /* The status line reports the result of a real object-manager probe, not
+     * cached state: ProbeDevice opens the derived device name with zero access
+     * and closes it, so "found" means the name actually resolved right now. */
+    Console::WriteText(L"Checking if device exists... ", Console::Brush::LightYellow);
+    const bool devicePresent = client.ProbeDevice();
+    Console::WriteLine(devicePresent ? L"(Found)" : L"(Not Found)",
+                       devicePresent ? Console::Brush::LightGreen
+                                     : Console::Brush::LightRed);
+
+    /* A stale cached header must not bypass a failed probe. */
+    const bool connected = devicePresent && (client.Connected() || client.Connect());
     if (!connected) {
         Console::WriteLine(L"Device unavailable. Nothing to unload.",
                            Console::Brush::LightYellow);
         return;
     }
+
+    /* Announce only after the device is confirmed reachable. Printing this
+     * before the check would claim a disconnect is in progress even when no
+     * driver is mapped under that derived name. */
+    Console::WriteText(L"\nDisconnecting the current device driver: ", Console::Brush::Silver);
+    Console::WriteLine(client.DevicePath(), Console::Brush::LightCyan);
 
     const bool unloaded = client.Unload();
     client.Disconnect();
@@ -326,6 +347,9 @@ int wmain() {
         const std::wstring input = Trim(Console::ReadLine(L"Input: ", Console::Brush::Orange));
         if (std::wcin.eof()) {
             break;
+        }
+        if (input.empty()) {
+            continue;
         }
 
         if (input == L"1") {

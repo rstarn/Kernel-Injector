@@ -46,6 +46,40 @@ static BOOLEAN g_connectionClosing = FALSE;
  * g_regionLock, when the device and its symbolic link are being destroyed.
  * Client exit never sets it: the device must stay openable by name. */
 static BOOLEAN g_terminalShutdown = FALSE;
+static ULONG g_ioctlRegister = 0u;
+static ULONG g_ioctlKick = 0u;
+static ULONG g_ioctlUnload = 0u;
+static uint32_t g_magic = 0u;
+
+/* UNLOAD must not delete the device while its own IRP is still in flight.
+ * Queue the teardown to a work item after completing the IRP instead. */
+static WORK_QUEUE_ITEM g_teardownWorkItem;
+static BOOLEAN g_teardownQueued = FALSE;
+
+static VOID TeardownWorker(PVOID Context) {
+    LARGE_INTEGER delay;
+
+    UNREFERENCED_PARAMETER(Context);
+
+    /* The work item may start before IoCompleteRequest returns from the UNLOAD
+     * dispatch and before the client's CLOSE IRP is delivered. Give both a
+     * window to retire so IoDeleteDevice never runs with an IRP in flight. */
+    delay.QuadPart = -50000LL; /* 50 ms */
+    KeDelayExecutionThread(KernelMode, FALSE, &delay);
+
+    (void)BridgeReleaseResources();
+    (void)BootstrapDestroy();
+
+    /* Drop the IoCreateDriver reference last. If the client has not closed its
+     * handle yet, the device object still holds its own reference on the driver
+     * object and this drops ours to one; the object is then freed when that
+     * handle closes. Otherwise this is the final reference and the object is
+     * freed here. Either way no object-manager reference is leaked, and a later
+     * map can still claim the same device and link names. The mapped image
+     * itself stays resident — that is inherent to manual mapping and is the
+     * mapper's responsibility to reclaim. */
+    BootstrapReleaseDriverObject();
+}
 
 static NTSTATUS CompleteIrp(PIRP Irp, NTSTATUS status, ULONG_PTR information) {
     Irp->IoStatus.Status = status;
@@ -381,6 +415,7 @@ static NTSTATUS KickWorker(PVOID ContextParameter) {
     dispatch.PayloadOffset = 0u;
     dispatch.StageId = (uint16_t)AMGER_LOG_ID_COMMAND_DECODE;
     dispatch.ResultValue = 0u;
+    dispatch.Magic = g_magic;
     if (snapshot.PayloadSize != 0u) {
         const SIZE_T offset = (SIZE_T)(snapshot.PayloadVirtualAddress -
                                        (uint64_t)(uintptr_t)g_sharedUserAddress);
@@ -594,8 +629,22 @@ NTSTATUS BridgeCleanupConnection(PFILE_OBJECT FileObject) {
     return ReleaseRegion(FALSE, TRUE);
 }
 
+VOID BridgeConfigure(ULONG64 MachineHash) {
+    g_ioctlRegister = CTL_CODE(AMGER_DEVICE_TYPE,
+        AmgerIoctlFunction(AMGER_IOCTL_FUNCTION_REGISTER, MachineHash),
+        AMGER_IOCTL_METHOD, AMGER_IOCTL_ACCESS);
+    g_ioctlKick = CTL_CODE(AMGER_DEVICE_TYPE,
+        AmgerIoctlFunction(AMGER_IOCTL_FUNCTION_KICK, MachineHash),
+        AMGER_IOCTL_METHOD, AMGER_IOCTL_ACCESS);
+    g_ioctlUnload = CTL_CODE(AMGER_DEVICE_TYPE,
+        AmgerIoctlFunction(AMGER_IOCTL_FUNCTION_UNLOAD, MachineHash),
+        AMGER_IOCTL_METHOD, AMGER_IOCTL_ACCESS);
+    g_magic = AmgerMagicValue(MachineHash);
+}
+
 NTSTATUS BridgeDispatch(PDEVICE_OBJECT DeviceObject, PIRP Irp) {
     PIO_STACK_LOCATION stack;
+    ULONG code;
     UNREFERENCED_PARAMETER(DeviceObject);
 
     if (Irp == NULL) {
@@ -609,8 +658,9 @@ NTSTATUS BridgeDispatch(PDEVICE_OBJECT DeviceObject, PIRP Irp) {
         return CompleteIrp(Irp, STATUS_INVALID_PARAMETER, 0u);
     }
 
-    switch (stack->Parameters.DeviceIoControl.IoControlCode) {
-    case AMGER_IOCTL_REGISTER_SHARED_REGION: {
+    code = stack->Parameters.DeviceIoControl.IoControlCode;
+
+    if (code == g_ioctlRegister) {
         AMGER_REGISTRATION_CONTEXT context;
         NTSTATUS status;
 
@@ -663,9 +713,7 @@ NTSTATUS BridgeDispatch(PDEVICE_OBJECT DeviceObject, PIRP Irp) {
                  (uint32_t)STATUS_SUCCESS, (uint32_t)context.Request.Size);
 
         return CompleteIrp(Irp, STATUS_SUCCESS, 0u);
-    }
-
-    case AMGER_IOCTL_KICK: {
+    } else if (code == g_ioctlKick) {
         AMGER_KICK_CONTEXT context;
         AMGER_STATUS_WRITE_CONTEXT writeContext;
         volatile AMGER_COMMAND_HEADER* header = NULL;
@@ -715,13 +763,11 @@ NTSTATUS BridgeDispatch(PDEVICE_OBJECT DeviceObject, PIRP Irp) {
         }
 
         return CompleteIrp(Irp, status, 0u);
-    }
-
-    case AMGER_IOCTL_UNLOAD: {
+    } else if (code == g_ioctlUnload) {
         BOOLEAN owner;
+        BOOLEAN queueTeardown = FALSE;
         KIRQL oldIrql;
         NTSTATUS status;
-        NTSTATUS bootstrapStatus;
 
         if (stack->Parameters.DeviceIoControl.InputBufferLength != 0u ||
             stack->Parameters.DeviceIoControl.OutputBufferLength != 0u) {
@@ -732,6 +778,16 @@ NTSTATUS BridgeDispatch(PDEVICE_OBJECT DeviceObject, PIRP Irp) {
         owner = (stack->FileObject != NULL &&
                  stack->FileObject == g_ownerFile &&
                  !g_terminalShutdown);
+        if (owner) {
+            /* Claim deferred teardown atomically with the owner check. Two
+             * concurrent owner UNLOAD IRPs may both pass the owner test before
+             * BridgeBeginShutdown publishes terminal shutdown; without this
+             * atomic claim both would queue the same static WORK_QUEUE_ITEM,
+             * corrupting the system work queue and bugchecking. Exactly one
+             * caller wins the claim and queues teardown. */
+            queueTeardown = !g_teardownQueued;
+            g_teardownQueued = TRUE;
+        }
         KeReleaseSpinLock(&g_regionLock, oldIrql);
         if (!owner) {
             return CompleteIrp(Irp, STATUS_ACCESS_DENIED, 0u);
@@ -745,27 +801,26 @@ NTSTATUS BridgeDispatch(PDEVICE_OBJECT DeviceObject, PIRP Irp) {
                      (uint32_t)STATUS_SUCCESS, 0u);
         }
 
-        /* Terminal shutdown first: no new REGISTER or KICK may be admitted
-         * while the device is being removed. Client CLOSE after this is a
-         * no-op because ownership was already cleared. */
+        /* Enter terminal shutdown synchronously so no new REGISTER or KICK is
+         * admitted, but defer the actual object deletion: IoDeleteDevice from
+         * inside this IRP's dispatch can leave the driver object with an
+         * in-flight request and has produced object-reference bugchecks. */
         status = BridgeBeginShutdown();
         if (!NT_SUCCESS(status)) {
             return CompleteIrp(Irp, status, 0u);
         }
 
-        status = BridgeReleaseResources();
-        bootstrapStatus = BootstrapDestroy();
-        if (NT_SUCCESS(status)) {
-            status = bootstrapStatus;
+        if (queueTeardown) {
+            ExInitializeWorkItem(&g_teardownWorkItem, TeardownWorker, NULL);
+            ExQueueWorkItem(&g_teardownWorkItem, DelayedWorkQueue);
         }
 
-        /* The driver object reference is deliberately kept: the image was
-         * manually mapped and stays resident. Only the device and its name
-         * are gone, so a later map can claim the same fixed names. */
+        /* Full teardown is deferred to TeardownWorker: it drains the region,
+         * deletes the device and symbolic link, then drops the driver-object
+         * reference last. The mapped image stays resident until the mapper
+         * reclaims it, but no object-manager reference is leaked. */
         return CompleteIrp(Irp, status, 0u);
-    }
-
-    default:
+    } else {
         return CompleteIrp(Irp, STATUS_INVALID_DEVICE_REQUEST, 0u);
     }
 }

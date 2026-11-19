@@ -13,11 +13,11 @@
  * BootstrapReleaseDriverObject, and only after the device object (whose
  * creation took its own reference) has been deleted.
  *
- * Discovery is by well-known name only (see Protocol.h): the device and its
- * symbolic link are created unconditionally at DriverEntry and stay available
- * for every client until DriverUnload. No command or client exit removes the
- * name. BootstrapDestroy removes the link and the device together during
- * unload; BootstrapRemoveDiscovery is its link-only helper.
+ * Discovery uses a name derived from the machine GUID (see Protocol.h): the
+ * device and its symbolic link are created unconditionally at DriverEntry and
+ * stay available for every client until DriverUnload. No command or client
+ * exit removes the name. BootstrapDestroy removes the link and the device
+ * together during unload; BootstrapRemoveDiscovery is its link-only helper.
  */
 
 #include <ntifs.h>
@@ -71,6 +71,9 @@ static PDRIVER_OBJECT g_driverObject = NULL;
 static PDEVICE_OBJECT g_deviceObject = NULL;
 static UNICODE_STRING g_deviceName;
 static UNICODE_STRING g_symbolicLinkName;
+static WCHAR g_deviceNameBuffer[64];
+static WCHAR g_linkNameBuffer[64];
+static uint64_t g_machineHash = 0u;
 static volatile LONG g_linkCreated = 0;
 static BOOLEAN g_active = FALSE;
 
@@ -222,6 +225,105 @@ static NTSTATUS ApplyDeviceSecurity(PDEVICE_OBJECT DeviceObject) {
         DeviceObject, DACL_SECURITY_INFORMATION, &securityDescriptor);
 }
 
+static void CopyWideString(WCHAR* destination, const WCHAR* source) {
+    while (*source != L'\0') {
+        *destination++ = *source++;
+    }
+    *destination = L'\0';
+}
+
+/* MachineGuid is available in both user and kernel mode at PASSIVE_LEVEL.
+ * Failing to read it is not fatal: both sides then use the plain prefix. */
+static NTSTATUS ReadMachineGuid(WCHAR* output, ULONG capacityBytes, USHORT* byteLength) {
+    UNICODE_STRING keyName;
+    UNICODE_STRING valueName;
+    OBJECT_ATTRIBUTES attributes;
+    HANDLE keyHandle = NULL;
+    UCHAR information[512];
+    ULONG informationLength = 0u;
+    NTSTATUS status;
+
+    RtlInitUnicodeString(&keyName,
+        L"\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\Cryptography");
+    InitializeObjectAttributes(&attributes, &keyName, OBJ_CASE_INSENSITIVE, NULL, NULL);
+    status = ZwOpenKey(&keyHandle, KEY_READ, &attributes);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
+    RtlInitUnicodeString(&valueName, L"MachineGuid");
+    status = ZwQueryValueKey(keyHandle, &valueName, KeyValuePartialInformation,
+                             information, sizeof(information), &informationLength);
+    if (NT_SUCCESS(status)) {
+        const PKEY_VALUE_PARTIAL_INFORMATION partial =
+            (PKEY_VALUE_PARTIAL_INFORMATION)information;
+        if (partial->Type == REG_SZ &&
+            partial->DataLength >= sizeof(WCHAR) &&
+            partial->DataLength <= capacityBytes) {
+            RtlCopyMemory(output, partial->Data, partial->DataLength);
+            *byteLength = (USHORT)partial->DataLength;
+        } else {
+            status = STATUS_INVALID_PARAMETER;
+        }
+    }
+
+    ZwClose(keyHandle);
+    return status;
+}
+
+static void InitializeDerivedNames(VOID) {
+    WCHAR guid[64] = { 0 };
+    USHORT guidBytes = 0u;
+    LARGE_INTEGER now;
+    static const WCHAR digits[] = L"0123456789ABCDEF";
+
+    RtlZeroMemory(g_deviceNameBuffer, sizeof(g_deviceNameBuffer));
+    RtlZeroMemory(g_linkNameBuffer, sizeof(g_linkNameBuffer));
+    CopyWideString(g_deviceNameBuffer, L"\\Device\\");
+    CopyWideString(g_linkNameBuffer, L"\\DosDevices\\");
+
+    if (NT_SUCCESS(ReadMachineGuid(guid, sizeof(guid), &guidBytes)) &&
+        guidBytes >= sizeof(WCHAR)) {
+        g_machineHash = AmgerMachineHash(guid, (size_t)(guidBytes / sizeof(WCHAR)));
+    } else {
+        g_machineHash = AmgerMachineHash(AMGER_FALLBACK_GUID,
+                                         sizeof(AMGER_FALLBACK_GUID) / sizeof(WCHAR) - 1u);
+    }
+
+    AmgerAppendName(g_deviceNameBuffer, ARRAYSIZE(g_deviceNameBuffer), g_machineHash);
+    AmgerAppendName(g_linkNameBuffer, ARRAYSIZE(g_linkNameBuffer), g_machineHash);
+
+    /* The Win32 link stays stable so clients keep resolving the same \\.\<hash>
+     * path. The kernel device object gets a per-map unique suffix: IoDeleteDevice
+     * can leave a name reserved while stale references drain, so a later map
+     * must not fail with STATUS_OBJECT_NAME_COLLISION (0xC0000035). */
+    KeQuerySystemTime(&now);
+    {
+        uint32_t unique = (uint32_t)((uint64_t)now.QuadPart & 0xFFFFFFFFull);
+        size_t used = 0u;
+        while (used < ARRAYSIZE(g_deviceNameBuffer) &&
+               g_deviceNameBuffer[used] != L'\0') {
+            ++used;
+        }
+        for (int index = 7; index >= 0 &&
+                            used + 1u < ARRAYSIZE(g_deviceNameBuffer);
+             --index) {
+            g_deviceNameBuffer[used++] = digits[unique & 0xFu];
+            unique >>= 4u;
+        }
+        if (used < ARRAYSIZE(g_deviceNameBuffer)) {
+            g_deviceNameBuffer[used] = L'\0';
+        }
+    }
+
+    RtlInitUnicodeString(&g_deviceName, g_deviceNameBuffer);
+    RtlInitUnicodeString(&g_symbolicLinkName, g_linkNameBuffer);
+}
+
+ULONG64 BootstrapMachineHash(VOID) {
+    return g_machineHash;
+}
+
 /* Runs inside IoCreateDriver with the genuine, object-manager-owned driver
  * object. Failure returns hand the object back to IoCreateDriver, which owns
  * cleanup: this callback must never call ObDereferenceObject on it. Bootstrap
@@ -237,8 +339,13 @@ static NTSTATUS BootstrapCreateDriver(
 
     g_driverObject = DriverObject;
 
-    RtlInitUnicodeString(&g_deviceName, AMGER_DEVICE_NAME);
-    RtlInitUnicodeString(&g_symbolicLinkName, AMGER_SYMBOLIC_LINK);
+    InitializeDerivedNames();
+
+    /* A previous mapping may have left the derived Win32 name behind: client
+     * exit intentionally keeps it and unload can fail partway. Clear any stale
+     * link first so IoCreateSymbolicLink cannot collide. The device object name
+     * is unique per map, so it cannot collide either. */
+    (void)IoDeleteSymbolicLink(&g_symbolicLinkName);
 
     status = IoCreateDevice(
         DriverObject,

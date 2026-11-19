@@ -109,7 +109,7 @@ NTSTATUS DispatcherDispatch(
         snapshot = Context->Snapshot;
         Context->StageId = (uint16_t)AMGER_LOG_ID_HEADER_VALIDATE;
 
-        if (snapshot->Magic != AMGER_MAGIC_NUMBER ||
+        if (snapshot->Magic != Context->Magic ||
             snapshot->Version != AMGER_PROTOCOL_VERSION ||
             snapshot->Status != AMGER_STATUS_PENDING) {
             status = STATUS_INVALID_PARAMETER;

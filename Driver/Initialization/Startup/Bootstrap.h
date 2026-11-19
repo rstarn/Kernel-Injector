@@ -86,4 +86,8 @@ VOID BootstrapReportCleanupFailure(NTSTATUS status);
  */
 BOOLEAN BootstrapIsActive(VOID);
 
+/* Per-machine hash derived from MachineGuid, shared with the bridge for
+ * randomized IOCTL codes and the command magic. */
+ULONG64 BootstrapMachineHash(VOID);
+
 #endif /* AMGER_BOOTSTRAP_H */

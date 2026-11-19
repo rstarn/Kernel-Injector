@@ -3,12 +3,12 @@
 /*
  * Channel.hpp - user-mode side of the shared-memory channel.
  *
- * Contract: owns the well-known device handle (see AMGER_USER_DEVICE in
- * Protocol.h) and the user allocation that the driver locks with an MDL.
+ * Contract: owns the handle to the machine-derived device name and the user
+ * allocation that the driver locks with an MDL.
  * The region is sized on demand: PING needs only the header, INJECT needs
  * the header plus its payload. Commands complete synchronously with their
  * IOCTL; no polling is performed.
- * Inputs: the fixed Protocol.h device name and the command fields.
+ * Inputs: the machine-derived device path and the command fields.
  * Outputs: success/failure of Connect/Ping, and the final driver NTSTATUS
  * from Inject.
  * Failure modes: Connect fails on an unopenable device, allocation failure
@@ -19,6 +19,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
+#include <string>
 #include <vector>
 #include <Windows.h>
 
@@ -42,6 +43,12 @@ public:
 
     bool Connect(size_t regionSize = AMGER_COMMAND_REGION_SIZE + AMGER_LOG_AREA_SIZE);
     bool Connected() const;
+
+    /* Genuine object-manager probe: opens the derived device path with no
+     * read/write access and closes it immediately. Unlike Connected(), which
+     * only reports cached in-process state, this always asks the OS whether a
+     * device currently exists under that name. */
+    bool ProbeDevice() const;
     bool Ping();
     uint32_t Inject(uint32_t targetProcessId, uint32_t options,
                     const void* payload, size_t payloadSize);
@@ -49,6 +56,7 @@ public:
     void Disconnect();
 
     uint64_t ResultValue() const;
+    const std::wstring& DevicePath() const;
 
     /* Returns dispatcher records newer than the last ones displayed. */
     std::vector<LogRecord> DrainLogs();
@@ -58,6 +66,7 @@ public:
 
 private:
     static void WriteCommand(volatile AMGER_COMMAND_HEADER* header,
+                             uint32_t magic,
                              uint32_t command,
                              uint64_t payloadVirtualAddress,
                              uint64_t payloadSize,
@@ -75,4 +84,6 @@ private:
     size_t regionSize;
     uint32_t lastLogSequence;
     uint64_t resultValue;
+    uint64_t machineHash;
+    std::wstring devicePath;
 };

@@ -290,6 +290,9 @@ void WaitForEnter(const std::wstring& message) {
     WriteText(message, Brush::Gray);
     std::wstring discarded;
     std::getline(std::wcin, discarded);
+    /* Leave the cursor on a fresh line so the next screen never appends to
+     * the prompt text. */
+    Emit(L"\n");
 }
 
 }  // namespace Console

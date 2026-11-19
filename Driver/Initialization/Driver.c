@@ -55,6 +55,8 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT MapperDriverObject, PUNICODE_STRING Registry
         return status;
     }
 
+    BridgeConfigure(BootstrapMachineHash());
+
     status = BridgeRegisterIoControl(driverObject, deviceObject);
     if (!NT_SUCCESS(status)) {
         /* Preserve the original failure; BootstrapDestroy logs cleanup failure. */

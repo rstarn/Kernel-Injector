@@ -118,7 +118,7 @@ link /nologo /subsystem:console /machine:x64 /manifest:no /out:"%AMGER_OUTPUT%\C
     "%AMGER_OBJECTS%\Console.obj" ^
     "%AMGER_OBJECTS%\Process.obj" ^
     "%AMGER_OBJECTS%\Channel.obj" ^
-    kernel32.lib user32.lib
+    kernel32.lib user32.lib advapi32.lib
 if errorlevel 1 goto :Failed
 
 rem Remove a sidecar left by an older build; Output must contain binaries only.

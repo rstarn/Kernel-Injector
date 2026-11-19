@@ -29,7 +29,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define AMGER_MAGIC_NUMBER 0x52474D41u
+/* Opaque mixing constant. Deliberately not an ASCII pattern (the previous
+ * value spelled a four-letter tag in little-endian bytes); it only separates
+ * the derived command magic from the raw machine hash. */
+#define AMGER_MAGIC_NUMBER 0x7C1E9A43u
 
 /* Version 2 adds the sequence-counter snapshot protocol. */
 #define AMGER_PROTOCOL_VERSION 2u
@@ -143,11 +146,54 @@ typedef struct _AMGER_RESULT_CONTROL {
 #define AMGER_SEQUENCE_OFFSET 48u
 #define AMGER_SEQUENCE_RETRY_LIMIT 4u
 
-/* Fixed object names. Discovery is by well-known name only: there is no
- * bootstrap file and no per-load GUID, so the client needs no path argument. */
-#define AMGER_DEVICE_NAME   L"\\Device\\Amger"
-#define AMGER_SYMBOLIC_LINK L"\\DosDevices\\Amger"
-#define AMGER_USER_DEVICE   L"\\\\.\\Amger"
+/* Every externally visible identifier is derived from the machine GUID.
+ * There is no product string in any device name. The two sides compute the
+ * same values from the same registry value; a failed read falls back to a
+ * derived constant so both still agree. */
+#define AMGER_NAME_DIGITS 16u
+/* Neutral fallback when the MachineGuid registry value is unreadable. Both
+ * sides derive from the same text, so the value only has to be identical —
+ * it must not carry any product identifier. */
+#define AMGER_FALLBACK_GUID L"6F1D9A24-8C3E-4B57-A0D2-9E8F1C4A6B30"
+
+/* FNV-1a 64 over UTF-16 code units, in C so both C and C++ can use it. */
+static __inline uint64_t AmgerMachineHash(const wchar_t* text, size_t length) {
+    uint64_t hash = 14695981039346656037ull;
+    for (size_t index = 0u; index < length; ++index) {
+        const uint16_t unit = (uint16_t)text[index];
+        hash ^= (uint64_t)(unit & 0xFFu);
+        hash *= 1099511628211ull;
+        hash ^= (uint64_t)(unit >> 8);
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
+
+/* Appends sixteen hex digits to an already-populated namespace prefix. */
+static __inline void AmgerAppendName(wchar_t* buffer, size_t capacity, uint64_t value) {
+    static const wchar_t digits[] = L"0123456789ABCDEF";
+    size_t used = 0u;
+    while (used < capacity && buffer[used] != L'\0') {
+        ++used;
+    }
+    for (int shift = 60; shift >= 0; shift -= 4) {
+        if (used + 1u < capacity) {
+            buffer[used++] = digits[(value >> shift) & 0xFu];
+        }
+    }
+    if (used < capacity) {
+        buffer[used] = L'\0';
+    }
+}
+
+/* Per-machine IOCTL function offsets and magic value. */
+static __inline uint32_t AmgerIoctlFunction(uint32_t base, uint64_t hash) {
+    return base + (uint32_t)(hash & 0x7Fu);
+}
+
+static __inline uint32_t AmgerMagicValue(uint64_t hash) {
+    return (uint32_t)(hash ^ (hash >> 32)) ^ AMGER_MAGIC_NUMBER;
+}
 
 /*
  * CTL_CODE definition, written locally so neither compilation environment
@@ -279,11 +325,11 @@ AMGER_STATIC_ASSERT(AMGER_SEQUENCE_OFFSET % 4u == 0u,
                     "Sequence counter must be 4-byte aligned");
 AMGER_STATIC_ASSERT(offsetof(AMGER_COMMAND_HEADER, AlignmentPadding) == 112,
                     "AlignmentPadding offset mismatch");
-AMGER_STATIC_ASSERT(AMGER_IOCTL_REGISTER_SHARED_REGION == 0x0022A000u,
-                    "REGISTER IOCTL value mismatch");
-AMGER_STATIC_ASSERT(AMGER_IOCTL_KICK == 0x0022A004u,
-                    "KICK IOCTL value mismatch");
-AMGER_STATIC_ASSERT(AMGER_IOCTL_UNLOAD == 0x0022A008u,
-                    "UNLOAD IOCTL value mismatch");
+/* IOCTL values are derived per machine at runtime, so only their spacing is
+ * fixed here. */
+AMGER_STATIC_ASSERT(AMGER_IOCTL_FUNCTION_KICK - AMGER_IOCTL_FUNCTION_REGISTER == 1u,
+                    "IOCTL function spacing mismatch");
+AMGER_STATIC_ASSERT(AMGER_IOCTL_FUNCTION_UNLOAD - AMGER_IOCTL_FUNCTION_KICK == 1u,
+                    "IOCTL function spacing mismatch");
 
 #endif /* AMGER_PROTOCOL_H */
