@@ -3,7 +3,7 @@ setlocal enabledelayedexpansion
 
 rem ===========================================================================
 rem Ameger Phase 1 build driver.
-rem Usage: Build.bat [BUILD | CLEAN | REBUILD]
+rem Usage: Create.bat [BUILD | CLEAN | REBUILD]
 rem This script is the single source of truth for compiler flags. The former
 rem compile_commands.json is intentionally absent: its per-target commands are
 rem the ones below, so nothing can drift from the build.
@@ -25,7 +25,7 @@ if /i "%AMGER_ACTION%"=="REBUILD" goto :Rebuild
 if /i "%AMGER_ACTION%"=="BUILD" goto :Build
 
 echo Unknown action: %AMGER_ACTION%
-echo Usage: Build.bat [BUILD ^| CLEAN ^| REBUILD]
+echo Usage: Create.bat [BUILD ^| CLEAN ^| REBUILD]
 exit /b 1
 
 :Clean

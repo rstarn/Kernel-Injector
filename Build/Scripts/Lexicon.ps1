@@ -7,7 +7,7 @@
 # build time, and writes a header of numeric arrays that decode at runtime. No
 # readable label string ever exists in the compiled binary or in source.
 #
-# Run automatically by Build.bat before compiling the client. Safe to run by
+# Run automatically by Create.bat before compiling the client. Safe to run by
 # hand: the output is deterministic, so regeneration is a no-op when Protocol.h
 # has not changed.
 
