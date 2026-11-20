@@ -330,13 +330,14 @@ std::vector<ChannelClient::LogRecord> ChannelClient::DrainLogs() {
         reinterpret_cast<PUCHAR>(sharedRegion) + regionSize - sizeof(AMGER_LOG_RING));
 
     for (unsigned attempt = 0u; attempt < 4u; ++attempt) {
+        /* The log ring is NOT a seqlock. The driver writes every field of a
+         * record first, issues a barrier, and only then publishes the final
+         * sequence (LogStage in Bridge.c). It never marks a record with an odd
+         * "writer active" value, so rejecting odd values here silently dropped
+         * roughly half of all records, including one-record teardown logs.
+         * The before/after double sample below is the real torn-read guard. */
         const uint32_t before = ring->Sequence;
         MemoryBarrier();
-        /* An odd sequence means the writer is mid-record; do not treat it as a
-         * stable snapshot. The driver publishes even values only. */
-        if ((before & 1u) != 0u) {
-            continue;
-        }
 
         records.clear();
         for (size_t index = 0u; index < AMGER_LOG_ENTRY_COUNT; ++index) {
