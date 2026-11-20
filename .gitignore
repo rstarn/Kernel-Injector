@@ -1,17 +1,22 @@
 # Build artifacts (Phase 1)
+# Build.bat produces these two trees; MSBuild (Build/Project/Client.vcxproj)
+# also writes intermediates under Build/Objects/Client/.
 Build/Output/
 Build/Objects/
 
-# clangd language-server index cache (redirected outside the repo via .clangd)
-.cache/
-
-# Reference asset
-Assets/Target.dll
-
-# Compiler intermediates
+# MSBuild / linker intermediates (defense in depth if an output dir moves)
+*.tlog
+*.recipe
+*.lastbuildstate
 *.obj
 *.pdb
 *.ilk
 *.idb
 *.exp
 *.lib
+
+# clangd language-server index cache (redirected outside the repo via .clangd)
+.cache/
+
+# Reference asset — supplied locally, never committed
+Assets/Target.dll
