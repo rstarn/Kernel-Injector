@@ -24,13 +24,17 @@ static VOID DriverUnload(PDRIVER_OBJECT DriverObject) {
     (void)BridgeBeginShutdown();
     const NTSTATUS regionStatus = BridgeReleaseResources();
 
-    /* BootstrapDestroy reports its own failures to the kernel error log. */
-    (void)BootstrapDestroy();
+    /* BootstrapDestroy reports its own failures through BootstrapReportCleanupFailure
+     * (in-memory record + DbgPrintEx, no Event Log artifact). */
+    const NTSTATUS destroyStatus = BootstrapDestroy();
 
-    /* DriverUnload cannot return a status. Bridge release failures have no IRP
-     * channel here, so post them to the kernel error log. */
+    /* DriverUnload has no IRP channel to return a status. Keep every failure in
+     * the in-memory record so it is observable rather than silently dropped. */
     if (!NT_SUCCESS(regionStatus)) {
         BootstrapReportCleanupFailure(regionStatus);
+    }
+    if (!NT_SUCCESS(destroyStatus)) {
+        BootstrapReportCleanupFailure(destroyStatus);
     }
 
     /* The device object is gone, so the driver object can be released last. */

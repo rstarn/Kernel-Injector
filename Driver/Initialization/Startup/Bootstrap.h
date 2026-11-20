@@ -72,12 +72,22 @@ NTSTATUS BootstrapDestroyDevice(VOID);
 NTSTATUS BootstrapDestroy(VOID);
 
 /*
- * Contract: reports a lifecycle cleanup failure to the kernel error log, which
- * persists after unload. Used for failures that have no IRP status channel.
- * Inputs: NTSTATUS to record. Outputs: none. Failure modes: a failed allocation
- * is ignored because logging must never change driver behaviour.
+ * Contract: reports a lifecycle cleanup failure without a persistent artifact.
+ * The status is kept in an in-memory record and emitted through DbgPrintEx, so
+ * it is observable to an attached debugger but never written to Event Viewer.
+ * Used for failures that have no IRP status channel.
+ * Inputs: NTSTATUS to record. Outputs: none. Failure modes: none; reporting
+ * must never change driver behaviour.
  */
 VOID BootstrapReportCleanupFailure(NTSTATUS status);
+
+/*
+ * Contract: reads and clears the first lifecycle failure recorded by
+ * BootstrapReportCleanupFailure / BootstrapDestroy. Lets a caller surface the
+ * failure through its own channel instead of leaving it silent.
+ * Inputs: none. Outputs: the first recorded failure, or STATUS_SUCCESS.
+ */
+NTSTATUS BootstrapLastFailure(VOID);
 
 /*
  * Contract: reports whether bootstrap initialization completed.

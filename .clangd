@@ -7,7 +7,7 @@ CompileFlags:
     - -fms-compatibility-version=19.51
 ---
 If:
-  PathMatch: Client/.*\.cpp$
+  PathMatch: Client/.*\.(cpp|hpp)$
 CompileFlags:
   Add:
     - -std=c++17

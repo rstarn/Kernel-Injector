@@ -29,6 +29,7 @@
 #include "../Utilities/Process.hpp"
 #include "../Transport/Channel.hpp"
 #include "../../Shared/Protocol.h"
+#include "../Utilities/Lexicon.hpp"
 
 namespace {
 
@@ -67,28 +68,22 @@ struct Session {
     ChannelClient channel;
 };
 
+/* Names come from a generated table of XOR-encoded arrays, selected by the
+ * raw code/id. No stringified token is materialised, so the diagnostic labels
+ * are not plaintext in the binary. */
 const wchar_t* StatusName(uint32_t status) {
-#define AMGER_STATUS_NAME_CASE(code, name) case code: return L#name;
-    switch (status) {
-        AMGER_STATUS_TABLE(AMGER_STATUS_NAME_CASE)
-    default:
-        break;
+    const wchar_t* known = LabelStatus(status);
+    if (known != nullptr) {
+        return known;
     }
-#undef AMGER_STATUS_NAME_CASE
     static wchar_t unknown[32] = {};
     swprintf_s(unknown, L"UNKNOWN_0x%08X", status);
     return unknown;
 }
 
 const wchar_t* LogIdName(uint16_t id) {
-#define AMGER_LOG_ID_NAME_CASE(code, name) case code: return L#name;
-    switch (id) {
-        AMGER_LOG_ID_TABLE(AMGER_LOG_ID_NAME_CASE)
-    default:
-        break;
-    }
-#undef AMGER_LOG_ID_NAME_CASE
-    return L"UNKNOWN";
+    const wchar_t* known = LabelLog(id);
+    return known != nullptr ? known : L"UNKNOWN";
 }
 
 void PrintLogs(const std::vector<ChannelClient::LogRecord>& records) {

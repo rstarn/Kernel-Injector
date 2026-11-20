@@ -67,8 +67,20 @@ static VOID TeardownWorker(PVOID Context) {
     delay.QuadPart = -50000LL; /* 50 ms */
     KeDelayExecutionThread(KernelMode, FALSE, &delay);
 
-    (void)BridgeReleaseResources();
-    (void)BootstrapDestroy();
+    {
+        const NTSTATUS regionStatus = BridgeReleaseResources();
+        const NTSTATUS destroyStatus = BootstrapDestroy();
+
+        /* Surface failures instead of discarding them: the in-memory record is
+         * readable by a debugger and via BootstrapLastFailure, so a teardown
+         * problem is never silent even though no Event Log entry is produced. */
+        if (!NT_SUCCESS(regionStatus)) {
+            BootstrapReportCleanupFailure(regionStatus);
+        }
+        if (!NT_SUCCESS(destroyStatus)) {
+            BootstrapReportCleanupFailure(destroyStatus);
+        }
+    }
 
     /* Drop the IoCreateDriver reference last. If the client has not closed its
      * handle yet, the device object still holds its own reference on the driver

@@ -54,19 +54,6 @@ ObSetSecurityObjectByPointer(
  * creation (see ApplyDeviceSecurity), so access never depends on the default
  * DACL inherited from the token the mapper happened to run under. */
 
-/* Use the WDK-defined IO_ERR_DRIVER_ERROR for lifecycle cleanup failures.
- * Its message ("Driver detected an internal error in its data structures
- * for %1.") is supplied by the standard iologmsg.dll message source.
- * The original NTSTATUS is preserved in FinalStatus and DumpData[0].
- *
- * 0xC0040004: Sev=3 (STATUS_SEVERITY_ERROR), C=0 (Microsoft-defined),
- * Facility=0x004 (FACILITY_IO_ERROR_CODE), Code=0x004. */
-C_ASSERT(IO_ERR_DRIVER_ERROR == (NTSTATUS)0xC0040004L);
-
-/* UCHAR_MAX is not defined by the WDK kernel headers; the size passed to
- * IoAllocateErrorLogEntry must fit in UCHAR. */
-#define AMGER_ERROR_LOG_SIZE_MAX 0xFFu
-
 static PDRIVER_OBJECT g_driverObject = NULL;
 static PDEVICE_OBJECT g_deviceObject = NULL;
 static UNICODE_STRING g_deviceName;
@@ -89,48 +76,27 @@ static KMUTEX g_discoveryMutex;
  * first instead of waiting on uninitialized mutex storage. */
 static BOOLEAN g_discoveryReady = FALSE;
 
+/* Last teardown failure, kept in memory so a failure is never silent: a
+ * debugger/attached diagnostics can read it, but nothing is written to the
+ * Event Log or any other persistent store. */
+static volatile LONG g_lastLifecycleFailure = 0;
+
 static VOID ReportLifecycleFailure(NTSTATUS status) {
-    const ULONG dumpDataSize = sizeof(ULONG);
-    const SIZE_T allocationSize = sizeof(IO_ERROR_LOG_PACKET) + dumpDataSize;
-    UCHAR entrySize;
-    PIO_ERROR_LOG_PACKET packet;
-
-    /* A late teardown failure can run after both objects are gone. The error
-     * log API requires a real object, so report nothing rather than NULL. */
-    if (g_driverObject == NULL && g_deviceObject == NULL) {
+    if (NT_SUCCESS(status)) {
         return;
     }
 
-    if (allocationSize > (SIZE_T)ERROR_LOG_MAXIMUM_SIZE ||
-        allocationSize > (SIZE_T)AMGER_ERROR_LOG_SIZE_MAX) {
-        return;
-    }
-    entrySize = (UCHAR)allocationSize;
+    /* Keep the first failure: retries must not overwrite the original cause. */
+    InterlockedCompareExchange(&g_lastLifecycleFailure, (LONG)status, 0L);
 
-    packet = (PIO_ERROR_LOG_PACKET)IoAllocateErrorLogEntry(
-        g_driverObject != NULL ? (PVOID)g_driverObject : (PVOID)g_deviceObject,
-        entrySize);
-    if (packet == NULL) {
-        return;
-    }
+    /* Debugger-visible only. DbgPrintEx is filtered by DPFLTR level and leaves
+     * no disk artifact, unlike IoWriteErrorLogEntry (Event Viewer). */
+    DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL,
+               "lifecycle failure: 0x%08X\n", (ULONG)status);
+}
 
-    RtlZeroMemory(packet, allocationSize);
-
-    packet->MajorFunctionCode = 0;
-    packet->RetryCount = 0;
-    packet->DumpDataSize = (USHORT)dumpDataSize;
-    packet->NumberOfStrings = 0;
-    packet->StringOffset = 0;
-    packet->EventCategory = 0;
-    packet->ErrorCode = IO_ERR_DRIVER_ERROR;
-    packet->UniqueErrorValue = (ULONG)status;
-    packet->FinalStatus = status;
-    packet->SequenceNumber = 0;
-    packet->IoControlCode = 0;
-    packet->DeviceOffset.QuadPart = 0;
-    packet->DumpData[0] = (ULONG)status;
-
-    IoWriteErrorLogEntry(packet);
+NTSTATUS BootstrapLastFailure(VOID) {
+    return (NTSTATUS)InterlockedCompareExchange(&g_lastLifecycleFailure, 0L, 0L);
 }
 
 static NTSTATUS InitializeBootstrapSecurity(
