@@ -230,7 +230,7 @@ void InjectScreen(Session& session) {
         Console::WriteLine(L"Payload could not be delivered.", Console::Brush::LightRed);
     } else {
         wchar_t text[96] = {};
-        swprintf_s(text, L"Driver status: 0x%08X (%s)", status, StatusName(status));
+        swprintf_s(text, L"Driver Status: 0x%08X (%s)", status, StatusName(status));
         Console::WriteLine(text, Console::Brush::LightRed);
     }
 
@@ -241,7 +241,7 @@ void InjectScreen(Session& session) {
      * flow (which expects a keypress here) is unchanged. */
 
     Console::WriteRaw(L"\n");
-    Console::WriteText(L"Injection engine: ", Console::Brush::Silver);
+    Console::WriteText(L"Injection Engine: ", Console::Brush::Silver);
     Console::WriteLine(L"deferred (payload submitted to the driver above).",
                        Console::Brush::LightYellow);
     Console::WriteText(L"Press Enter to continue...", Console::Brush::Gray);
