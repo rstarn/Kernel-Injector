@@ -50,9 +50,9 @@ if not exist "%AMGER_OBJECTS%" mkdir "%AMGER_OBJECTS%"
 rem --- Regenerate obfuscated label header from Shared\Protocol.h -------------
 rem Lexicon.hpp holds XOR-encoded diagnostic labels; regenerating it here keeps
 rem it reproducible from the protocol tables instead of hand-maintained.
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%AMGER_ROOT%\Build\Scripts\GenLexicon.ps1" "%AMGER_ROOT%"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%AMGER_ROOT%\Build\Scripts\Lexicon.ps1" "%AMGER_ROOT%"
 if errorlevel 1 (
-    echo [Ameger] ERROR: GenLexicon.ps1 failed.
+    echo [Ameger] ERROR: Lexicon.ps1 failed.
     exit /b 1
 )
 
