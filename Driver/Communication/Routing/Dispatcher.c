@@ -157,7 +157,19 @@ NTSTATUS DispatcherDispatch(
                 break;
             case AMGER_COMMAND_STATUS:
                 Context->StageId = (uint16_t)AMGER_LOG_ID_STATUS_COMMAND;
-                status = STATUS_NOT_IMPLEMENTED;
+                /* STATUS has no payload or target. Publish the first lifecycle
+                 * teardown failure in the result slot so a client can observe
+                 * it; the command itself succeeds when nothing has failed. */
+                status = (snapshot->PayloadVirtualAddress == 0u &&
+                          snapshot->PayloadSize == 0u &&
+                          snapshot->TargetProcessId == 0u &&
+                          snapshot->Options == 0u &&
+                          snapshot->CompletionEventHandle == 0u)
+                             ? STATUS_SUCCESS
+                             : STATUS_INVALID_PARAMETER;
+                if (NT_SUCCESS(status)) {
+                    Context->ResultValue = (uint64_t)Context->LastFailure;
+                }
                 break;
             default:
                 status = STATUS_INVALID_PARAMETER;

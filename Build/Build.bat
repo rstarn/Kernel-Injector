@@ -47,6 +47,15 @@ if exist "%AMGER_OBJECTS%" rmdir /s /q "%AMGER_OBJECTS%"
 if not exist "%AMGER_OUTPUT%" mkdir "%AMGER_OUTPUT%"
 if not exist "%AMGER_OBJECTS%" mkdir "%AMGER_OBJECTS%"
 
+rem --- Regenerate obfuscated label header from Shared\Protocol.h -------------
+rem Lexicon.hpp holds XOR-encoded diagnostic labels; regenerating it here keeps
+rem it reproducible from the protocol tables instead of hand-maintained.
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%AMGER_ROOT%\Build\GenLexicon.ps1" "%AMGER_ROOT%"
+if errorlevel 1 (
+    echo [Ameger] ERROR: GenLexicon.ps1 failed.
+    exit /b 1
+)
+
 rem --- Locate the Visual Studio x64 build environment -----------------------
 set "AMGER_VCVARS="
 for /d %%v in ("C:\Program Files\Microsoft Visual Studio\2022\*") do (

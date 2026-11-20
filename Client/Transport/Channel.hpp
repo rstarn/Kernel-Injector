@@ -50,6 +50,11 @@ public:
      * device currently exists under that name. */
     bool ProbeDevice() const;
     bool Ping();
+    /* Issues the STATUS command and returns the first lifecycle teardown fault
+     * recorded by the driver, or 0 when none has been recorded. This is the
+     * client-side consumer of the driver's in-memory failure record, so a
+     * teardown failure is visible rather than silent. */
+    uint32_t LastFault();
     uint32_t Inject(uint32_t targetProcessId, uint32_t options,
                     const void* payload, size_t payloadSize);
     bool Unload();

@@ -82,9 +82,10 @@ NTSTATUS BootstrapDestroy(VOID);
 VOID BootstrapReportCleanupFailure(NTSTATUS status);
 
 /*
- * Contract: reads and clears the first lifecycle failure recorded by
- * BootstrapReportCleanupFailure / BootstrapDestroy. Lets a caller surface the
- * failure through its own channel instead of leaving it silent.
+ * Contract: reads the first lifecycle failure recorded by
+ * BootstrapReportCleanupFailure / BootstrapDestroy without clearing it, so a
+ * caller can surface the failure through its own channel instead of leaving it
+ * silent. The record is never reset while the driver is resident.
  * Inputs: none. Outputs: the first recorded failure, or STATUS_SUCCESS.
  */
 NTSTATUS BootstrapLastFailure(VOID);

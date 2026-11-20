@@ -31,6 +31,9 @@ typedef struct _AMGER_DISPATCH_CONTEXT {
     SIZE_T PayloadOffset;
     uint16_t StageId;
     uint32_t Magic;
+    /* First lifecycle teardown failure recorded by the bootstrap layer, or
+     * zero. Published by the STATUS command so it is never silent. */
+    uint32_t LastFailure;
     uint64_t ResultValue;
 } AMGER_DISPATCH_CONTEXT, * PAMGER_DISPATCH_CONTEXT;
 

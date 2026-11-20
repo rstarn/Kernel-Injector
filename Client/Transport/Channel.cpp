@@ -217,6 +217,32 @@ bool ChannelClient::Ping() {
            status == 0u; /* STATUS_SUCCESS is zero in both environments. */
 }
 
+uint32_t ChannelClient::LastFault() {
+    std::lock_guard<std::mutex> lock(operationMutex);
+    if (deviceHandle == INVALID_HANDLE_VALUE || sharedRegion == nullptr || header == nullptr) {
+        return 0u;
+    }
+
+    /* Reset the result slot so a stale value from a prior Inject cannot be
+     * mistaken for a fault. The driver publishes zero for STATUS when clean. */
+    volatile AMGER_RESULT_CONTROL* result =
+        reinterpret_cast<volatile AMGER_RESULT_CONTROL*>(&header->Reserved[0]);
+    result->ResultValue = 0u;
+
+    WriteCommand(header, AmgerMagicValue(machineHash), AMGER_COMMAND_STATUS,
+                 0u, 0u, 0u, 0u);
+
+    DWORD bytesReturned = 0u;
+    (void)DeviceIoControl(
+        deviceHandle,
+        DerivedIoctl(AMGER_IOCTL_FUNCTION_KICK, machineHash),
+        nullptr, 0u, nullptr, 0u, &bytesReturned, nullptr);
+
+    MemoryBarrier();
+    resultValue = result->ResultValue;
+    return static_cast<uint32_t>(resultValue);
+}
+
 uint32_t ChannelClient::Inject(uint32_t targetProcessId,
                                uint32_t options,
                                const void* payload,

@@ -230,6 +230,7 @@ void StatusScreen(Session& session) {
 
     bool pingOk = false;
     double pingMilliseconds = 0.0;
+    uint32_t lastFault = 0u;
     if (connected) {
         LARGE_INTEGER frequency = {};
         LARGE_INTEGER started = {};
@@ -242,6 +243,9 @@ void StatusScreen(Session& session) {
             pingMilliseconds = 1000.0 * static_cast<double>(finished.QuadPart - started.QuadPart) /
                                static_cast<double>(frequency.QuadPart);
         }
+        /* Query the driver's recorded teardown fault after PING (both share the
+         * single command slot), so it is surfaced instead of left silent. */
+        lastFault = client.LastFault();
     }
 
     PrintLogs(client.DrainLogs());
@@ -285,6 +289,12 @@ void StatusScreen(Session& session) {
         connected ? Console::Brush::LightCyan : Console::Brush::Gray);
     row(L"Device Connection:", connected ? L"Connected" : L"Not Connected",
         connected ? Console::Brush::LightGreen : Console::Brush::LightRed);
+
+    if (lastFault != 0u) {
+        wchar_t fault[96] = {};
+        swprintf_s(fault, L"0x%08X (%s)", lastFault, StatusName(lastFault));
+        row(L"Last fault:", fault, Console::Brush::LightRed);
+    }
 }
 
 void UnloadScreen(Session& session) {

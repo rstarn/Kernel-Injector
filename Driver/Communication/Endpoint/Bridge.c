@@ -428,6 +428,9 @@ static NTSTATUS KickWorker(PVOID ContextParameter) {
     dispatch.StageId = (uint16_t)AMGER_LOG_ID_COMMAND_DECODE;
     dispatch.ResultValue = 0u;
     dispatch.Magic = g_magic;
+    /* Surface any recorded teardown failure through the STATUS command. The
+     * record is read-only, so repeated queries see the same first failure. */
+    dispatch.LastFailure = (uint32_t)BootstrapLastFailure();
     if (snapshot.PayloadSize != 0u) {
         const SIZE_T offset = (SIZE_T)(snapshot.PayloadVirtualAddress -
                                        (uint64_t)(uintptr_t)g_sharedUserAddress);
@@ -438,9 +441,10 @@ static NTSTATUS KickWorker(PVOID ContextParameter) {
 
     status = DispatcherDispatch(&dispatch, &context->Status);
 
-    /* Commands that produce data publish it in Reserved[8..15]; the seqlock
-     * word at Reserved[0..3] is untouched. */
-    if (dispatch.ResultValue != 0u) {
+    /* Every command publishes the result slot in Reserved[8..15] (zero when it
+     * produces no data), so a reader never sees a stale value from an earlier
+     * command. The seqlock word at Reserved[0..3] is untouched. */
+    {
         PAMGER_RESULT_CONTROL result =
             (PAMGER_RESULT_CONTROL)&context->Header->Reserved[0];
         MemoryBarrier();
