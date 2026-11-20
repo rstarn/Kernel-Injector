@@ -238,6 +238,32 @@ static VOID RegionEndOperation(VOID) {
     InterlockedDecrement(&g_activeOperations);
 }
 
+/* Take an operation reference purely to guard a log write through the committed
+ * mapping. Unlike RegionBeginOperation this does not require an owning file
+ * object (REGISTER post-commit and UNLOAD use it), but it still validates under
+ * g_regionLock that the mapping is Registered and takes the same reference the
+ * drain in ReleaseRegion waits on. This closes the check-then-write race where
+ * a concurrent CLEANUP could free the MDL between a NULL check and LogStage.
+ * Every successful call MUST be paired with RegionEndOperation. */
+static BOOLEAN RegionBeginLogRef(PVOID* OutAddress, SIZE_T* OutSize) {
+    KIRQL oldIrql;
+    BOOLEAN accepted;
+
+    KeAcquireSpinLock(&g_regionLock, &oldIrql);
+    accepted = (!g_terminalShutdown &&
+                !g_connectionClosing &&
+                g_regionState == RegionStateRegistered &&
+                g_sharedSystemAddress != NULL &&
+                g_sharedRegionSize >= AMGER_MINIMUM_REGION_SIZE);
+    if (accepted) {
+        InterlockedIncrement(&g_activeOperations);
+        *OutAddress = g_sharedSystemAddress;
+        *OutSize = g_sharedRegionSize;
+    }
+    KeReleaseSpinLock(&g_regionLock, oldIrql);
+    return accepted;
+}
+
 static VOID RegionReleasePartial(PAMGER_REGISTRATION_CONTEXT Context) {
     if (Context->Mdl != NULL) {
         if (Context->Locked) {
@@ -400,6 +426,15 @@ static NTSTATUS KickWorker(PVOID ContextParameter) {
         return STATUS_INVALID_PARAMETER;
     }
 
+    /* Publish a zero result slot up front so every early return below cannot
+     * leave a value from an earlier command visible to the client. */
+    {
+        PAMGER_RESULT_CONTROL result =
+            (PAMGER_RESULT_CONTROL)&context->Header->Reserved[0];
+        result->ResultValue = 0u;
+        MemoryBarrier();
+    }
+
     status = CaptureSnapshot(context->Header, &snapshot);
     if (status == STATUS_RETRY) {
         LogStage(g_sharedSystemAddress, g_sharedRegionSize,
@@ -469,6 +504,10 @@ NTSTATUS BridgeRegisterIoControl(
 
     KeInitializeSpinLock(&g_regionLock);
     KeInitializeMutex(&g_commandMutex, 0);
+    /* Reset the one-shot teardown claim at initialization, not in the worker:
+     * clearing it in the worker would allow a second queue of this same static
+     * WORK_QUEUE_ITEM during the 50 ms delay before it runs. */
+    g_teardownQueued = FALSE;
     DriverObject->MajorFunction[IRP_MJ_CREATE] = DefaultDispatch;
     DriverObject->MajorFunction[IRP_MJ_CLEANUP] = CleanupDispatch;
     DriverObject->MajorFunction[IRP_MJ_CLOSE] = CloseDispatch;
@@ -724,9 +763,20 @@ NTSTATUS BridgeDispatch(PDEVICE_OBJECT DeviceObject, PIRP Irp) {
             return CompleteIrp(Irp, STATUS_INVALID_DEVICE_STATE, 0u);
         }
 
-        LogStage(context.SystemAddress, (SIZE_T)context.Request.Size,
-                 (uint16_t)AMGER_LOG_ID_REGISTER_COMMIT,
-                 (uint32_t)STATUS_SUCCESS, (uint32_t)context.Request.Size);
+        /* The committed mapping is now owned by the globals. Re-acquire a
+         * region reference before logging through it so a concurrent CLEANUP
+         * cannot race this write; the reference validates the region is still
+         * the Registered one rather than trusting the now-aliasing local. */
+        {
+            PVOID logAddress = NULL;
+            SIZE_T logSize = 0u;
+            if (RegionBeginLogRef(&logAddress, &logSize)) {
+                LogStage(logAddress, logSize,
+                         (uint16_t)AMGER_LOG_ID_REGISTER_COMMIT,
+                         (uint32_t)STATUS_SUCCESS, (uint32_t)context.Request.Size);
+                RegionEndOperation();
+            }
+        }
 
         return CompleteIrp(Irp, STATUS_SUCCESS, 0u);
     } else if (code == g_ioctlKick) {
@@ -809,12 +859,18 @@ NTSTATUS BridgeDispatch(PDEVICE_OBJECT DeviceObject, PIRP Irp) {
             return CompleteIrp(Irp, STATUS_ACCESS_DENIED, 0u);
         }
 
-        /* Log while the mapping is still valid; after BridgeReleaseResources
-         * the header pages are no longer ours to touch. */
-        if (g_sharedSystemAddress != NULL) {
-            LogStage(g_sharedSystemAddress, g_sharedRegionSize,
-                     (uint16_t)AMGER_LOG_ID_UNLOAD_OWNER,
-                     (uint32_t)STATUS_SUCCESS, 0u);
+        /* Log while the mapping is still valid, under a region reference so a
+         * concurrent CLEANUP cannot free the MDL between the check and the
+         * write. After BridgeReleaseResources the pages are no longer ours. */
+        {
+            PVOID logAddress = NULL;
+            SIZE_T logSize = 0u;
+            if (RegionBeginLogRef(&logAddress, &logSize)) {
+                LogStage(logAddress, logSize,
+                         (uint16_t)AMGER_LOG_ID_UNLOAD_OWNER,
+                         (uint32_t)STATUS_SUCCESS, 0u);
+                RegionEndOperation();
+            }
         }
 
         /* Enter terminal shutdown synchronously so no new REGISTER or KICK is

@@ -72,6 +72,12 @@ struct Session {
  * raw code/id. No stringified token is materialised, so the diagnostic labels
  * are not plaintext in the binary. */
 const wchar_t* StatusName(uint32_t status) {
+    if (status == AMGER_CLIENT_STATUS_QUERY_FAILED) {
+        return L"STATUS_QUERY_FAILED";
+    }
+    if (status == AMGER_CLIENT_BAD_ARGUMENTS) {
+        return L"BAD_ARGUMENTS";
+    }
     const wchar_t* known = LabelStatus(status);
     if (known != nullptr) {
         return known;
@@ -192,6 +198,8 @@ void InjectScreen(Session& session) {
         Console::WriteLine(L"Device rejected the payload region.", Console::Brush::LightRed);
     } else if (status == AMGER_CLIENT_KICK_FAILED) {
         Console::WriteLine(L"Device did not answer the command.", Console::Brush::LightRed);
+    } else if (status == AMGER_CLIENT_BAD_ARGUMENTS) {
+        Console::WriteLine(L"Payload was invalid or too large.", Console::Brush::LightRed);
     } else if (status == AMGER_STATUS_PENDING) {
         Console::WriteLine(L"Payload could not be delivered.", Console::Brush::LightRed);
     } else {
@@ -311,8 +319,16 @@ void UnloadScreen(Session& session) {
                        devicePresent ? Console::Brush::LightGreen
                                      : Console::Brush::LightRed);
 
-    /* A stale cached header must not bypass a failed probe. */
-    const bool connected = devicePresent && (client.Connected() || client.Connect());
+    /* A stale cached header must not bypass a failed probe. If the device is
+     * genuinely gone, drop any cached handle/MDL-backed region so a later
+     * Status screen cannot operate on a stale handle or leak the mapping. */
+    if (!devicePresent) {
+        client.Disconnect();
+        Console::WriteLine(L"Device unavailable. Nothing to unload.",
+                           Console::Brush::LightYellow);
+        return;
+    }
+    const bool connected = client.Connected() || client.Connect();
     if (!connected) {
         Console::WriteLine(L"Device unavailable. Nothing to unload.",
                            Console::Brush::LightYellow);

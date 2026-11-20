@@ -233,10 +233,18 @@ uint32_t ChannelClient::LastFault() {
                  0u, 0u, 0u, 0u);
 
     DWORD bytesReturned = 0u;
-    (void)DeviceIoControl(
+    const BOOL kickOk = DeviceIoControl(
         deviceHandle,
         DerivedIoctl(AMGER_IOCTL_FUNCTION_KICK, machineHash),
         nullptr, 0u, nullptr, 0u, &bytesReturned, nullptr);
+
+    /* Only trust the result slot if the STATUS command actually completed.
+     * Otherwise the slot is still the zero we wrote, which would be reported
+     * as "no fault" and hide the fact that the query failed. */
+    const uint32_t status = ReadFinalStatus(header);
+    if (kickOk == FALSE || status == AMGER_STATUS_PENDING) {
+        return AMGER_CLIENT_STATUS_QUERY_FAILED;
+    }
 
     MemoryBarrier();
     resultValue = result->ResultValue;
@@ -249,9 +257,13 @@ uint32_t ChannelClient::Inject(uint32_t targetProcessId,
                                size_t payloadSize) {
     std::lock_guard<std::mutex> lock(operationMutex);
 
+    /* Clear any value left by a prior command so a failed inject cannot show a
+     * stale remote base. Only a successful, non-PENDING completion overwrites it. */
+    resultValue = 0u;
+
     if (payload == nullptr || payloadSize == 0u ||
         payloadSize > static_cast<size_t>(AMGER_MAXIMUM_PAYLOAD_SIZE) - AMGER_LOG_AREA_SIZE) {
-        return AMGER_STATUS_PENDING;
+        return AMGER_CLIENT_BAD_ARGUMENTS;
     }
 
     const size_t needed = static_cast<size_t>(AMGER_PAYLOAD_OFFSET) + payloadSize +
