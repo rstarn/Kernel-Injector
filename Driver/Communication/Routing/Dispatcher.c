@@ -6,6 +6,7 @@
  * The bridge has already bounds-checked the range inside the registered MDL;
  * this layer validates the command-level semantics. The mapping engine itself
  * is linked in a later build, so a valid request reports NOT_IMPLEMENTED. */
+
 static NTSTATUS ValidateInjectRequest(const AMGER_DISPATCH_CONTEXT* Context) {
     const AMGER_COMMAND_SNAPSHOT* snapshot = Context->Snapshot;
 
@@ -28,6 +29,7 @@ static NTSTATUS ValidateInjectRequest(const AMGER_DISPATCH_CONTEXT* Context) {
 /* Kernel headers do not expose the user-mode IMAGE_* types, so the PE fields
  * are read byte-wise. Alignment is irrelevant and a malformed image cannot
  * fault the guarded worker. */
+
 static uint32_t ReadLe32(const PUCHAR bytes) {
     return (uint32_t)bytes[0] |
            ((uint32_t)bytes[1] << 8) |
@@ -80,6 +82,7 @@ static NTSTATUS ValidatePeImage(const AMGER_DISPATCH_CONTEXT* Context) {
         }
 
         /* The section table must fit inside the declared headers. */
+
         {
             const uint16_t optionalSize = ReadLe16(nt + 20u);
             const uint64_t sectionEnd = (uint64_t)peOffset + 24u + optionalSize +
@@ -118,8 +121,10 @@ NTSTATUS DispatcherDispatch(
             switch (snapshot->Command) {
             case AMGER_COMMAND_PING:
                 Context->StageId = (uint16_t)AMGER_LOG_ID_PING;
+
                 /* PING has no payload or target. Reject nonzero fields rather
                  * than silently accepting data that this command never uses. */
+
                 status = (snapshot->PayloadVirtualAddress == 0u &&
                           snapshot->PayloadSize == 0u &&
                           snapshot->TargetProcessId == 0u &&
@@ -157,9 +162,11 @@ NTSTATUS DispatcherDispatch(
                 break;
             case AMGER_COMMAND_STATUS:
                 Context->StageId = (uint16_t)AMGER_LOG_ID_STATUS_COMMAND;
+
                 /* STATUS has no payload or target. Publish the first lifecycle
                  * teardown failure in the result slot so a client can observe
                  * it; the command itself succeeds when nothing has failed. */
+
                 status = (snapshot->PayloadVirtualAddress == 0u &&
                           snapshot->PayloadSize == 0u &&
                           snapshot->TargetProcessId == 0u &&
@@ -179,5 +186,6 @@ NTSTATUS DispatcherDispatch(
     }
 
     *OutStatus = (uint32_t)status;
+
     return status;
 }

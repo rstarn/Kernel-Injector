@@ -20,6 +20,7 @@
  * which is permitted). All classification and logging happens inside the
  * handler block, where the captured code is an ordinary local variable.
  */
+
 NTSTATUS GuardExecute(
     AMGER_EXCEPTION_GUARDED_WORKER Worker,
     PVOID Context,
@@ -44,6 +45,7 @@ NTSTATUS GuardExecute(
 
         /* A probed user range that was rejected is an ordinary invalid request.
          * Everything else is an internal fault and must be reported as such. */
+
         return wasProbe ? STATUS_INVALID_PARAMETER : STATUS_UNSUCCESSFUL;
     }
 }

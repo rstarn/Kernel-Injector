@@ -80,6 +80,7 @@
 /* Reserved[0..3] is the seqlock; Reserved[8..15] carries a 64-bit result
  * value written by the driver (e.g. the injected module base). The four
  * bytes before it are alignment padding. */
+
 typedef struct _AMGER_RESULT_CONTROL {
     uint32_t Sequence;
     uint64_t ResultValue;
@@ -151,12 +152,14 @@ typedef struct _AMGER_RESULT_CONTROL {
  * same values from the same registry value; a failed read falls back to a
  * derived constant so both still agree. */
 #define AMGER_NAME_DIGITS 16u
+
 /* Neutral fallback when the MachineGuid registry value is unreadable. Both
  * sides derive from the same text, so the value only has to be identical —
  * it must not carry any product identifier. */
 #define AMGER_FALLBACK_GUID L"6F1D9A24-8C3E-4B57-A0D2-9E8F1C4A6B30"
 
 /* FNV-1a 64 over UTF-16 code units, in C so both C and C++ can use it. */
+
 static __inline uint64_t AmgerMachineHash(const wchar_t* text, size_t length) {
     uint64_t hash = 14695981039346656037ull;
     for (size_t index = 0u; index < length; ++index) {
@@ -175,6 +178,7 @@ static __inline uint64_t AmgerMachineHash(const wchar_t* text, size_t length) {
  * it at compile time. */
 #define AMGER_APPEND_NAME_CAPACITY(prefix_length) \
     ((prefix_length) + AMGER_NAME_DIGITS + 1u)
+
 /* Assert a destination buffer has room for a prefix of prefix_length wchar_t,
  * the appended digits, and the NUL. Widen wcslen(prefix) as the caller's
  * compile-time constant (e.g. the literal length, not a runtime value). */
@@ -186,6 +190,7 @@ static __inline uint64_t AmgerMachineHash(const wchar_t* text, size_t length) {
  * `capacity` is the total buffer size in wchar_t; the function never writes
  * past it, but a buffer smaller than AMGER_APPEND_NAME_CAPACITY would truncate
  * the name and break agreement between the two sides. */
+
 static __inline void AmgerAppendName(wchar_t* buffer, size_t capacity, uint64_t value) {
     static const wchar_t digits[] = L"0123456789ABCDEF";
     size_t used = 0u;
@@ -203,6 +208,7 @@ static __inline void AmgerAppendName(wchar_t* buffer, size_t capacity, uint64_t 
 }
 
 /* Per-machine IOCTL function offsets and magic value. */
+
 static __inline uint32_t AmgerIoctlFunction(uint32_t base, uint64_t hash) {
     return base + (uint32_t)(hash & 0x7Fu);
 }
@@ -244,6 +250,7 @@ static __inline uint32_t AmgerMagicValue(uint64_t hash) {
  * command fields and Sequence. AlignmentPadding exists only to reach 128
  * bytes and must remain zero.
  */
+
 typedef struct _AMGER_COMMAND_HEADER {
     uint32_t Magic;
     uint32_t Version;
@@ -259,6 +266,7 @@ typedef struct _AMGER_COMMAND_HEADER {
 } AMGER_COMMAND_HEADER, * PAMGER_COMMAND_HEADER;
 
 /* Overlay for the seqlock word inside Reserved. */
+
 typedef struct _AMGER_HEADER_CONTROL {
     uint32_t Sequence;
     uint8_t  Remainder[60];
@@ -266,6 +274,7 @@ typedef struct _AMGER_HEADER_CONTROL {
 
 /* One dispatcher log record. Sequence is absolute so the client can display
  * only entries newer than the last one it saw. */
+
 typedef struct _AMGER_LOG_ENTRY {
     uint32_t Sequence;
     uint16_t Id;
@@ -283,6 +292,7 @@ typedef struct _AMGER_LOG_RING {
  * AMGER_COMMAND_SNAPSHOT - kernel-local copy of the command input.
  * Not part of the wire layout; used so dispatch never reads mutable user memory.
  */
+
 typedef struct _AMGER_COMMAND_SNAPSHOT {
     uint32_t Magic;
     uint32_t Version;
@@ -301,6 +311,7 @@ typedef struct _AMGER_COMMAND_SNAPSHOT {
  * Contract: describes the user-mode region to be locked and mapped. Size must
  * be at least the header size and no greater than AMGER_SHARED_REGION_SIZE.
  */
+
 typedef struct _AMGER_SHARED_REGION_REQUEST {
     uint64_t VirtualAddress;
     uint64_t Size;
@@ -341,8 +352,10 @@ AMGER_STATIC_ASSERT(AMGER_SEQUENCE_OFFSET % 4u == 0u,
                     "Sequence counter must be 4-byte aligned");
 AMGER_STATIC_ASSERT(offsetof(AMGER_COMMAND_HEADER, AlignmentPadding) == 112,
                     "AlignmentPadding offset mismatch");
+
 /* IOCTL values are derived per machine at runtime, so only their spacing is
  * fixed here. */
+
 AMGER_STATIC_ASSERT(AMGER_IOCTL_FUNCTION_KICK - AMGER_IOCTL_FUNCTION_REGISTER == 1u,
                     "IOCTL function spacing mismatch");
 AMGER_STATIC_ASSERT(AMGER_IOCTL_FUNCTION_UNLOAD - AMGER_IOCTL_FUNCTION_KICK == 1u,

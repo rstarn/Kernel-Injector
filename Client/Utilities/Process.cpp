@@ -62,8 +62,10 @@ bool MatchesImageName(const std::wstring& normalizedQuery, const std::wstring& i
     if (name.empty()) {
         return false;
     }
+
     /* Direct match (with or without extension), extension-optional on the
      * query side, and extension-optional on both sides. */
+
     return normalizedQuery == name ||
            normalizedQuery == StripExe(name) ||
            normalizedQuery + L".exe" == name ||

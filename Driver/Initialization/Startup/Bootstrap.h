@@ -36,6 +36,7 @@
  * driver object has already been deleted by IoCreateDriver and must not be
  * touched.
  */
+
 NTSTATUS BootstrapInitialize(
     PDEVICE_OBJECT* OutDeviceObject,
     PDRIVER_OBJECT* OutDriverObject);
@@ -48,6 +49,7 @@ NTSTATUS BootstrapInitialize(
  * BootstrapDestroyDevice has deleted the device object, because device
  * creation holds its own reference on the driver object.
  */
+
 VOID BootstrapReleaseDriverObject(VOID);
 
 /*
@@ -56,12 +58,14 @@ VOID BootstrapReleaseDriverObject(VOID);
  * Failure modes: STATUS_OBJECT_NAME_NOT_FOUND is treated as success; other
  * errors are returned and leave the link flag set so a later retry can run.
  */
+
 NTSTATUS BootstrapRemoveDiscovery(VOID);
 
 /*
  * Contract: deletes the device object. Idempotent.
  * Inputs: none. Outputs: STATUS_SUCCESS. Failure modes: none reported.
  */
+
 NTSTATUS BootstrapDestroyDevice(VOID);
 
 /*
@@ -69,6 +73,7 @@ NTSTATUS BootstrapDestroyDevice(VOID);
  * Inputs: none. Outputs: worst NTSTATUS from the two steps.
  * Failure modes: see BootstrapRemoveDiscovery.
  */
+
 NTSTATUS BootstrapDestroy(VOID);
 
 /*
@@ -79,6 +84,7 @@ NTSTATUS BootstrapDestroy(VOID);
  * Inputs: NTSTATUS to record. Outputs: none. Failure modes: none; reporting
  * must never change driver behaviour.
  */
+
 VOID BootstrapReportCleanupFailure(NTSTATUS status);
 
 /*
@@ -88,6 +94,7 @@ VOID BootstrapReportCleanupFailure(NTSTATUS status);
  * silent. The record is never reset while the driver is resident.
  * Inputs: none. Outputs: the first recorded failure, or STATUS_SUCCESS.
  */
+
 NTSTATUS BootstrapLastFailure(VOID);
 
 /*
@@ -95,10 +102,12 @@ NTSTATUS BootstrapLastFailure(VOID);
  * Inputs: none. Outputs: TRUE before destruction, FALSE afterwards.
  * Failure modes: none.
  */
+
 BOOLEAN BootstrapIsActive(VOID);
 
 /* Per-machine hash derived from MachineGuid, shared with the bridge for
  * randomized IOCTL codes and the command magic. */
+
 ULONG64 BootstrapMachineHash(VOID);
 
 #endif /* AMGER_BOOTSTRAP_H */

@@ -28,6 +28,7 @@ WORD g_defaultAttributes = 0x0007u;  // FOREGROUND_RED | GREEN | BLUE
 
 /* Console path writes UTF-16 directly through WriteConsoleW; a codepage can
  * never corrupt the banner. Redirected output falls back to std::wcout. */
+
 void Emit(const std::wstring& text) {
     if (g_isConsole) {
         DWORD written = 0u;
@@ -65,7 +66,13 @@ WORD BrushAttributes(Brush brush) {
     case Brush::Silver:
         return FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE;
     case Brush::Gray:
-        return FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE;
+
+        /* Dark gray in the legacy 16-color palette is the intensity bit with
+         * no color bits. Previously this returned the same attribute as Silver
+         * (light gray/white), so Gray text was indistinguishable from normal
+         * text in the non-VT fallback. The VT path already returns 128,128,128. */
+
+        return FOREGROUND_INTENSITY;
     case Brush::LightGreen:
         return FOREGROUND_GREEN | FOREGROUND_INTENSITY;
     case Brush::LightRed:
@@ -175,8 +182,10 @@ void Initialize() {
         if (GetConsoleScreenBufferInfo(output, &g_defaultBufferInfo) != FALSE) {
             g_defaultAttributes = g_defaultBufferInfo.wAttributes;
         }
+
         /* The banner uses box-drawing and block glyphs; emit UTF-8 so a
          * legacy console code page cannot corrupt them. */
+
         SetConsoleOutputCP(CP_UTF8);
         SetConsoleCP(CP_UTF8);
         const DWORD wanted = mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING | ENABLE_PROCESSED_OUTPUT;
@@ -213,10 +222,12 @@ void WriteLine(const std::wstring& text, Brush brush) {
 }
 
 void ClearScreen() {
+
     /* Clearing never depends on VT escape sequences: some hosts accept
      * ENABLE_VIRTUAL_TERMINAL_PROCESSING but swallow the bytes, which leaves
      * every redraw appended to the previous one. The buffer fill works on
      * every real console regardless of what VT honours. */
+
     const HANDLE output = StdOut();
     CONSOLE_SCREEN_BUFFER_INFO info = {};
     if (g_isConsole && GetConsoleScreenBufferInfo(output, &info) != FALSE) {
@@ -229,7 +240,9 @@ void ClearScreen() {
         SetConsoleCursorPosition(output, home);
         return;
     }
+
     /* Redirected output: fall back to vertical whitespace. */
+
     Emit(std::wstring(40u, L'\n'));
 }
 
@@ -238,8 +251,10 @@ void WriteDivider() {
 }
 
 void RenderBanner() {
+
     /* Thick ANSI-Shadow wordmark. Width derives from the widest line, never
      * hardcoded; the gradient spans exactly that width. */
+
     static const wchar_t* const kArt[] = {
         L" █████╗ ███╗   ███╗███████╗ ██████╗ ███████╗██████╗",
         L"██╔══██╗████╗ ████║██╔════╝██╔════╝ ██╔════╝██╔══██╗",
@@ -290,8 +305,10 @@ void WaitForEnter(const std::wstring& message) {
     WriteText(message, Brush::Gray);
     std::wstring discarded;
     std::getline(std::wcin, discarded);
+
     /* Leave the cursor on a fresh line so the next screen never appends to
      * the prompt text. */
+
     Emit(L"\n");
 }
 

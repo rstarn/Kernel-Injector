@@ -71,6 +71,7 @@ struct Session {
 /* Names come from a generated table of XOR-encoded arrays, selected by the
  * raw code/id. No stringified token is materialised, so the diagnostic labels
  * are not plaintext in the binary. */
+
 const wchar_t* StatusName(uint32_t status) {
     if (status == AMGER_CLIENT_STATUS_QUERY_FAILED) {
         return L"STATUS_QUERY_FAILED";
@@ -95,9 +96,11 @@ const wchar_t* LogIdName(uint16_t id) {
 void PrintLogs(const std::vector<ChannelClient::LogRecord>& records) {
     uint16_t previousId = 0u;
     for (const auto& record : records) {
+
         /* Each command's validation phase follows the previous command's RESULT.
          * Separate the two commands with a blank line so the log reads as
          * distinct blocks instead of one continuous stream. */
+
         if (record.Id == AMGER_LOG_ID_HEADER_VALIDATE &&
             previousId == AMGER_LOG_ID_RESULT) {
             Console::WriteRaw(L"\n");
@@ -105,6 +108,7 @@ void PrintLogs(const std::vector<ChannelClient::LogRecord>& records) {
 
         /* The command-stage records start a second visual group after the
          * validation records. */
+
         if (record.Id == AMGER_LOG_ID_PING ||
             record.Id == AMGER_LOG_ID_INJECT ||
             record.Id == AMGER_LOG_ID_EJECT ||
@@ -138,9 +142,12 @@ void PrintLogs(const std::vector<ChannelClient::LogRecord>& records) {
 /* Client.exe lives in Build\Output; the reference DLL is two levels up in
  * Assets. Deriving from the module path keeps the location relative to the
  * install regardless of the process working directory. */
+
 std::wstring ResolveTargetPath() {
+
     /* Grow until the whole path fits; a MAX_PATH-sized buffer with a truncated
      * return would derive the wrong directory (or none). */
+
     std::vector<wchar_t> modulePath(MAX_PATH);
     DWORD length = GetModuleFileNameW(nullptr, modulePath.data(),
                                       static_cast<DWORD>(modulePath.size()));
@@ -227,19 +234,18 @@ void InjectScreen(Session& session) {
         Console::WriteLine(text, Console::Brush::LightRed);
     }
 
-    /* Keep this prompt outside the status branches: INJECT currently returns
-     * STATUS_NOT_IMPLEMENTED until the mapping engine is linked, so a prompt
-     * gated on success would never be reachable. */
+    /* The INJECT command has already been issued above (line 212), so this is
+     * NOT a cancellation prompt - answering N cannot undo anything. The injection
+     * engine is deferred, so word it as a status note rather than asking for a
+     * decision that has no effect. Kept as an interaction so the existing menu
+     * flow (which expects a keypress here) is unchanged. */
+
     Console::WriteRaw(L"\n");
-    Console::WriteText(L"Ready to inject? (", Console::Brush::Silver);
-    Console::WriteText(L"Y", Console::Brush::LightGreen);
-    Console::WriteText(L"/", Console::Brush::Gray);
-    Console::WriteText(L"N", Console::Brush::LightRed);
-    Console::WriteText(L"): ", Console::Brush::Silver);
-    const std::wstring answer = Trim(Console::ReadLine(L"", Console::Brush::Silver));
-    if (!answer.empty() && (answer.front() == L'Y' || answer.front() == L'y')) {
-        Console::WriteLine(L"\nDelegating to the injection engine...", Console::Brush::LightYellow);
-    }
+    Console::WriteText(L"Injection engine: ", Console::Brush::Silver);
+    Console::WriteLine(L"deferred (payload submitted to the driver above).",
+                       Console::Brush::LightYellow);
+    Console::WriteText(L"Press Enter to continue...", Console::Brush::Gray);
+    (void)Console::ReadLine(L"", Console::Brush::Silver);
 
     const uint64_t remoteBase = session.channel.ResultValue();
     if (remoteBase != 0u) {
@@ -270,8 +276,10 @@ void StatusScreen(Session& session) {
             pingMilliseconds = 1000.0 * static_cast<double>(finished.QuadPart - started.QuadPart) /
                                static_cast<double>(frequency.QuadPart);
         }
+
         /* Query the driver's recorded teardown fault after PING (both share the
          * single command slot), so it is surfaced instead of left silent. */
+
         lastFault = client.LastFault();
     }
 
@@ -332,6 +340,7 @@ void UnloadScreen(Session& session) {
     /* The status line reports the result of a real object-manager probe, not
      * cached state: ProbeDevice opens the derived device name with zero access
      * and closes it, so "found" means the name actually resolved right now. */
+
     Console::WriteText(L"Checking if device exists... ", Console::Brush::LightYellow);
     const bool devicePresent = client.ProbeDevice();
     Console::WriteLine(devicePresent ? L"(Found)" : L"(Not Found)",
@@ -341,6 +350,7 @@ void UnloadScreen(Session& session) {
     /* A stale cached header must not bypass a failed probe. If the device is
      * genuinely gone, drop any cached handle/MDL-backed region so a later
      * Status screen cannot operate on a stale handle or leak the mapping. */
+
     if (!devicePresent) {
         client.Disconnect();
         Console::WriteLine(L"Device unavailable. Nothing to unload.",
@@ -357,6 +367,7 @@ void UnloadScreen(Session& session) {
     /* Announce only after the device is confirmed reachable. Printing this
      * before the check would claim a disconnect is in progress even when no
      * driver is mapped under that derived name. */
+
     Console::WriteText(L"\nDisconnecting the current device driver: ", Console::Brush::Silver);
     Console::WriteLine(client.DevicePath(), Console::Brush::LightCyan);
 
@@ -385,9 +396,11 @@ int wmain() {
     for (;;) {
         ShowMainScreen();
         const std::wstring input = Trim(Console::ReadLine(L"Input: ", Console::Brush::Orange));
+
         /* A redirected final line without a trailing newline sets eof() while
          * still returning its text. Process that text; only an empty read at
          * EOF ends the loop. */
+
         if (input.empty()) {
             if (std::wcin.eof()) {
                 break;

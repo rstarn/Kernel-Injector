@@ -18,6 +18,7 @@ namespace Console {
 
 /* Semantic colors. Orange anchors the banner gradient; the rest are used
  * for labels (Silver/Gray), values and state results. */
+
 enum class Brush {
     Default,      // console default foreground
     White,        // bright white
@@ -32,6 +33,7 @@ enum class Brush {
 
 /* Best-effort startup: enables virtual terminal processing when the attached
  * console supports it. Must be called once before any other call. */
+
 void Initialize();
 
 void ClearScreen();
@@ -40,20 +42,25 @@ void SetBrush(Brush brush);
 
 /* Writes text without changing colors. Same console/redirected path as the
  * colored writes; intended for raw spacing and plain notes. */
+
 void WriteRaw(const std::wstring& text);
 
 /* Writes text in the given brush and restores the default brush afterwards. */
+
 void WriteText(const std::wstring& text, Brush brush);
 void WriteLine(const std::wstring& text, Brush brush);
 
 /* Gradient banner (orange -> white, left to right) followed by a divider. */
+
 void RenderBanner();
 void WriteDivider();
 
 /* Prints the prompt in the given brush, then reads one line from stdin. */
+
 std::wstring ReadLine(const std::wstring& prompt, Brush promptBrush = Brush::White);
 
 /* Prints a dim message and waits for the user to press Enter. */
+
 void WaitForEnter(const std::wstring& message = L"Press Enter to return to the menu...");
 
 }  // namespace Console

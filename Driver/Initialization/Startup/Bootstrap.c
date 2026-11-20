@@ -29,6 +29,7 @@
 /* IoCreateDriver is documented (wdm.h) and exported by ntoskrnl.lib, but the
  * installed WDK header set does not declare it. The documented prototype is
  * repeated here so the call is type-checked; the link proves the export. */
+
 NTKERNELAPI
 NTSTATUS
 IoCreateDriver(
@@ -39,6 +40,7 @@ IoCreateDriver(
 /* ObSetSecurityObjectByPointer is documented and exported by ntoskrnl.lib but
  * the installed WDK header set does not declare it. The documented prototype
  * is repeated here so the call is type-checked; the link proves the export. */
+
 NTKERNELAPI
 NTSTATUS
 ObSetSecurityObjectByPointer(
@@ -66,9 +68,11 @@ static WCHAR g_linkNameBuffer[64];
  * (see InitializeDerivedNames), so assert that worst case here. 64 wchar_t is
  * ample for both, but keep the contract explicit so a future buffer shrink
  * cannot silently truncate a name and break client/driver agreement. */
+
 AMGER_STATIC_ASSERT(ARRAYSIZE(g_deviceNameBuffer) >= 8u + AMGER_NAME_DIGITS + 8u + 1u,
                     "device name buffer too small for prefix + hash + unique suffix + NUL");
 AMGER_ASSERT_NAME_BUFFER(ARRAYSIZE(g_linkNameBuffer), 12u);
+
 static uint64_t g_machineHash = 0u;
 static volatile LONG g_linkCreated = 0;
 static BOOLEAN g_active = FALSE;
@@ -77,17 +81,20 @@ static BOOLEAN g_active = FALSE;
  * mutex is held only around object-manager calls, never a spin lock, and the
  * interlocked link flag distinguishes "absent" from "deletion in progress"
  * across concurrent CLOSE / unload teardown. */
+
 static KMUTEX g_discoveryMutex;
 
 /* TRUE only once KeInitializeMutex has run. DriverEntry can fail before
  * BootstrapInitialize reaches that call (null output pointer), and a mapper may
  * still invoke DriverUnload afterwards, so every mutex user checks this flag
  * first instead of waiting on uninitialized mutex storage. */
+
 static BOOLEAN g_discoveryReady = FALSE;
 
 /* Last teardown failure, kept in memory so a failure is never silent: a
  * debugger/attached diagnostics can read it, but nothing is written to the
  * Event Log or any other persistent store. */
+
 static volatile LONG g_lastLifecycleFailure = 0;
 
 static VOID ReportLifecycleFailure(NTSTATUS status) {
@@ -96,10 +103,12 @@ static VOID ReportLifecycleFailure(NTSTATUS status) {
     }
 
     /* Keep the first failure: retries must not overwrite the original cause. */
+
     InterlockedCompareExchange(&g_lastLifecycleFailure, (LONG)status, 0L);
 
     /* Debugger-visible only. DbgPrintEx is filtered by DPFLTR level and leaves
      * no disk artifact, unlike IoWriteErrorLogEntry (Event Viewer). */
+
     DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL,
                "lifecycle failure: 0x%08X\n", (ULONG)status);
 }
@@ -140,6 +149,7 @@ static NTSTATUS InitializeBootstrapSecurity(
     /* Two ACEs only: SYSTEM and Builtin Administrators. Every other principal,
      * including any token the loader happened to run under, receives no ACE and
      * is therefore denied access by the default-deny DACL semantics. */
+
     status = RtlAddAccessAllowedAce(
         Acl, ACL_REVISION, SystemAccess, SystemSid);
     if (!NT_SUCCESS(status)) {
@@ -166,6 +176,7 @@ static NTSTATUS InitializeBootstrapSecurity(
     /* SE_DACL_PROTECTED is not applied here: the device is created fresh and
      * inherits nothing from an existing object, so the explicit DACL is all
      * obApplySecurityDescriptor installs. */
+
     return STATUS_SUCCESS;
 }
 
@@ -175,6 +186,7 @@ static NTSTATUS InitializeBootstrapSecurity(
  * device is no longer reachable through the default DACL of the loader token.
  * The descriptor is absolute and stack-resident; ObSetSecurityObjectByPointer
  * copies it into the object header before returning. */
+
 static NTSTATUS ApplyDeviceSecurity(PDEVICE_OBJECT DeviceObject) {
     DECLSPEC_ALIGN(4) UCHAR aclStorage[128];
     DECLSPEC_ALIGN(4) UCHAR systemSidStorage[
@@ -203,12 +215,15 @@ static NTSTATUS ApplyDeviceSecurity(PDEVICE_OBJECT DeviceObject) {
 static void CopyWideString(WCHAR* destination, const WCHAR* source) {
     while (*source != L'\0') {
         *destination++ = *source++;
+
     }
     *destination = L'\0';
+
 }
 
 /* MachineGuid is available in both user and kernel mode at PASSIVE_LEVEL.
  * Failing to read it is not fatal: both sides then use the plain prefix. */
+
 static NTSTATUS ReadMachineGuid(WCHAR* output, ULONG capacityBytes, USHORT* byteLength) {
     UNICODE_STRING keyName;
     UNICODE_STRING valueName;
@@ -247,9 +262,11 @@ static NTSTATUS ReadMachineGuid(WCHAR* output, ULONG capacityBytes, USHORT* byte
 }
 
 static void InitializeDerivedNames(VOID) {
+
     /* Same 128-WCHAR capacity the client uses in ReadMachineHash. Both sides
      * must accept the same MachineGuid length or they derive different names /
      * hashes / IOCTLs and the client cannot connect at all. */
+
     WCHAR guid[128] = { 0 };
     USHORT guidBytes = 0u;
     LARGE_INTEGER now;
@@ -275,6 +292,7 @@ static void InitializeDerivedNames(VOID) {
      * path. The kernel device object gets a per-map unique suffix: IoDeleteDevice
      * can leave a name reserved while stale references drain, so a later map
      * must not fail with STATUS_OBJECT_NAME_COLLISION (0xC0000035). */
+
     KeQuerySystemTime(&now);
     {
         uint32_t unique = (uint32_t)((uint64_t)now.QuadPart & 0xFFFFFFFFull);
@@ -307,6 +325,7 @@ ULONG64 BootstrapMachineHash(VOID) {
  * cleanup: this callback must never call ObDereferenceObject on it. Bootstrap
  * resources that were already created are unwound here so the caller sees a
  * clean slate. */
+
 static NTSTATUS BootstrapCreateDriver(
     PDRIVER_OBJECT DriverObject,
     PUNICODE_STRING RegistryPath) {
@@ -323,6 +342,7 @@ static NTSTATUS BootstrapCreateDriver(
      * exit intentionally keeps it and unload can fail partway. Clear any stale
      * link first so IoCreateSymbolicLink cannot collide. The device object name
      * is unique per map, so it cannot collide either. */
+
     (void)IoDeleteSymbolicLink(&g_symbolicLinkName);
 
     status = IoCreateDevice(
@@ -339,10 +359,13 @@ static NTSTATUS BootstrapCreateDriver(
 
     /* The device is published to user mode, so its DACL is fixed before the
      * symbolic link exposes it. A failure here leaves no name to reach it. */
+
     status = ApplyDeviceSecurity(g_deviceObject);
     if (!NT_SUCCESS(status)) {
+
         /* Preserve the security failure; record any device-deletion failure so
          * cleanup is never silent, matching the symbolic-link path below. */
+
         const NTSTATUS cleanupStatus = BootstrapDestroyDevice();
         if (!NT_SUCCESS(cleanupStatus)) {
             ReportLifecycleFailure(cleanupStatus);
@@ -352,7 +375,9 @@ static NTSTATUS BootstrapCreateDriver(
 
     status = IoCreateSymbolicLink(&g_symbolicLinkName, &g_deviceName);
     if (!NT_SUCCESS(status)) {
+
         /* Preserve the link failure; record any device-deletion failure. */
+
         const NTSTATUS cleanupStatus = BootstrapDestroyDevice();
         if (!NT_SUCCESS(cleanupStatus)) {
             ReportLifecycleFailure(cleanupStatus);
@@ -382,17 +407,21 @@ NTSTATUS BootstrapInitialize(
     /* Creates a genuine driver object and runs BootstrapCreateDriver against
      * it. The driver object is created unnamed: the device and symbolic link
      * carry the well-known name. */
+
     status = IoCreateDriver(NULL, BootstrapCreateDriver);
     if (!NT_SUCCESS(status)) {
+
         /* IoCreateDriver has already deleted the driver object it created and
          * the callback unwound its own bootstrap resources, so the pointer
          * held in g_driverObject is stale: never dereference or release it. */
+
         g_driverObject = NULL;
         return status;
     }
 
     *OutDeviceObject = g_deviceObject;
     *OutDriverObject = g_driverObject;
+
     return STATUS_SUCCESS;
 }
 
@@ -401,15 +430,19 @@ VOID BootstrapReleaseDriverObject(VOID) {
         (PVOID*)&g_driverObject, NULL);
 
     if (driver != NULL) {
+
         /* Defensive: clear the unload routine before dropping the final
          * reference. If any object-delete path were to invoke DriverUnload, it
          * would be a no-op; all teardown here is already idempotent, but this
          * removes even the speculative re-entry. DriverEntry installed it. */
+
         driver->DriverUnload = NULL;
+
         /* Drops the single reference IoCreateDriver returned to us. Callers
          * must have deleted the device object first: its creation took its own
          * reference on the driver object. Idempotent because the claim above
          * leaves NULL behind. */
+
         ObDereferenceObject(driver);
     }
 }
@@ -418,8 +451,9 @@ VOID BootstrapReleaseDriverObject(VOID) {
  *
  * The Win32 link name is derived from MachineGuid and is identical across
  * maps, while the device object name carries a per-map unique suffix. A fast
- * unload -> remap inside TeardownWorker's 50 ms delay lets a new map recreate
- * the SAME name pointing at its NEW device. Deleting by NAME here would then
+ * unload -> remap while the old image's deferred teardown is still draining
+ * lets a new map recreate the SAME name pointing at its NEW device. Deleting
+ * by NAME here would then
  * remove the new map's link and strand its device.
  *
  * Instead, open the link with DELETE access, verify its target through that
@@ -428,6 +462,7 @@ VOID BootstrapReleaseDriverObject(VOID) {
  * lookup, so even if a remap replaced the name between our open and our close
  * we can only ever remove the object we verified as ours. Wait-free, no named
  * mutex, safe at PASSIVE_LEVEL under g_discoveryMutex. */
+
 static NTSTATUS RemoveDiscoveryLocked(VOID) {
     NTSTATUS status = STATUS_SUCCESS;
 
@@ -446,7 +481,9 @@ static NTSTATUS RemoveDiscoveryLocked(VOID) {
             return STATUS_SUCCESS; /* already gone; nothing to retry */
         }
         if (!NT_SUCCESS(status)) {
+
             /* Cannot open: restore the claim so cleanup can retry. */
+
             InterlockedExchange(&g_linkCreated, 1L);
             return status;
         }
@@ -460,13 +497,17 @@ static NTSTATUS RemoveDiscoveryLocked(VOID) {
         }
 
         if (RtlEqualUnicodeString(&target, &g_deviceName, TRUE)) {
+
             /* Ours. Make this exact object temporary and drop our handle;
              * the name and object are removed when the handle count hits zero.
              * A remap that recreated the name owns a DIFFERENT object, which
              * this handle does not reference, so it is left untouched. */
+
             status = ZwMakeTemporaryObject(linkHandle);
         }
+
         /* Not ours (a newer map's): close without deleting it. */
+
         ZwClose(linkHandle);
 
         if (!NT_SUCCESS(status)) {
@@ -482,12 +523,14 @@ NTSTATUS BootstrapRemoveDiscovery(VOID) {
     NTSTATUS status;
 
     /* Nothing was initialized, so there is nothing to remove. */
+
     if (!g_discoveryReady) {
         return STATUS_SUCCESS;
     }
 
     /* Serialize with any concurrent CLOSE / unload teardown. The object-manager
      * calls run at PASSIVE_LEVEL under a mutex, never under g_regionLock. */
+
     KeWaitForSingleObject(&g_discoveryMutex, Executive, KernelMode, FALSE, NULL);
     status = RemoveDiscoveryLocked();
     KeReleaseMutex(&g_discoveryMutex, FALSE);
@@ -514,12 +557,14 @@ NTSTATUS BootstrapDestroy(VOID) {
     /* Uninitialized mutex storage must never be waited on. A failed
      * BootstrapInitialize (or a DriverEntry that never reached it) leaves no
      * bootstrap resource to tear down. */
+
     if (!g_discoveryReady) {
         return STATUS_SUCCESS;
     }
 
     /* One critical section covers discovery and device teardown so a concurrent
      * KICK cannot observe a half-removed bootstrap or race a second removal. */
+
     KeWaitForSingleObject(&g_discoveryMutex, Executive, KernelMode, FALSE, NULL);
 
     discoveryStatus = RemoveDiscoveryLocked();
@@ -527,6 +572,7 @@ NTSTATUS BootstrapDestroy(VOID) {
 
     /* Report inactive only when every resource is actually gone. A failed link
      * deletion restores its flag, keeping the state retryable. */
+
     complete = (g_linkCreated == 0 && g_deviceObject == NULL) ? TRUE : FALSE;
     if (complete) {
         g_active = FALSE;

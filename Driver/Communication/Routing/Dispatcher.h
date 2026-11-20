@@ -24,6 +24,7 @@
  * the registered MDL; it is NULL when PayloadSize is zero. The range has
  * already been bounds-checked by the bridge.
  */
+
 typedef struct _AMGER_DISPATCH_CONTEXT {
     const AMGER_COMMAND_SNAPSHOT* Snapshot;
     PVOID PayloadSystemAddress;
@@ -31,8 +32,10 @@ typedef struct _AMGER_DISPATCH_CONTEXT {
     SIZE_T PayloadOffset;
     uint16_t StageId;
     uint32_t Magic;
+
     /* First lifecycle teardown failure recorded by the bootstrap layer, or
      * zero. Published by the STATUS command so it is never silent. */
+
     uint32_t LastFailure;
     uint64_t ResultValue;
 } AMGER_DISPATCH_CONTEXT, * PAMGER_DISPATCH_CONTEXT;
@@ -44,6 +47,7 @@ typedef struct _AMGER_DISPATCH_CONTEXT {
  * Failure modes: null arguments yield STATUS_INVALID_PARAMETER; unknown or
  * unimplemented commands yield STATUS_INVALID_PARAMETER / STATUS_NOT_IMPLEMENTED.
  */
+
 NTSTATUS DispatcherDispatch(
     AMGER_DISPATCH_CONTEXT* Context,
     uint32_t* OutStatus);

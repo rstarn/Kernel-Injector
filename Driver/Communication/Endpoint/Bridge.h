@@ -23,23 +23,28 @@
  * Outputs: STATUS_SUCCESS with dispatch installed.
  * Failure modes: STATUS_INVALID_PARAMETER for either null pointer.
  */
+
 NTSTATUS BridgeRegisterIoControl(
     PDRIVER_OBJECT DriverObject,
     PDEVICE_OBJECT DeviceObject);
 
 /* Installs the per-machine IOCTL codes and command magic. */
+
 VOID BridgeConfigure(ULONG64 MachineHash);
 
 /*
  * Contract: services REGISTER_SHARED_REGION, KICK and UNLOAD with explicit
- * completion. UNLOAD is owner-only and removes the device and its symbolic
- * link; the driver object stays resident so a later map can reuse the names.
+ * completion. UNLOAD is owner-only and defers full teardown to a work item:
+ * after in-flight IRPs drain it removes the device and symbolic link and drops
+ * the driver-object reference, so a later map can reclaim the same names with
+ * a fresh object rather than colliding with a stale one.
  * Inputs: DeviceObject and IRP from the I/O manager.
  * Outputs: completed IRP whose status is the actual command outcome.
  * Failure modes: STATUS_INVALID_PARAMETER, STATUS_INVALID_DEVICE_STATE,
  * STATUS_ACCESS_DENIED, STATUS_INVALID_DEVICE_REQUEST or the dispatcher's
  * NTSTATUS.
  */
+
 NTSTATUS BridgeDispatch(
     PDEVICE_OBJECT DeviceObject,
     PIRP Irp);
@@ -52,6 +57,7 @@ NTSTATUS BridgeDispatch(
  * UNLOAD IOCTL before resource release; client CLOSE never enters shutdown.
  * Inputs: none. Outputs: STATUS_SUCCESS. Failure modes: none.
  */
+
 NTSTATUS BridgeBeginShutdown(VOID);
 
 /*
@@ -64,6 +70,7 @@ NTSTATUS BridgeBeginShutdown(VOID);
  * Inputs: none. Outputs: STATUS_SUCCESS. Failure modes: no resource is left
  * referenced after a successful return.
  */
+
 NTSTATUS BridgeReleaseResources(VOID);
 
 /*
@@ -77,6 +84,7 @@ NTSTATUS BridgeReleaseResources(VOID);
  * STATUS_DEVICE_BUSY while registration is still in progress, STATUS_TIMEOUT
  * when active operations did not drain within the bounded wait.
  */
+
 NTSTATUS BridgeCleanupConnection(PFILE_OBJECT FileObject);
 
 #endif /* AMGER_BRIDGE_H */

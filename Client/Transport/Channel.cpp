@@ -6,6 +6,7 @@
 
 /* Same derivation as Bootstrap.c. Every externally visible identifier comes
  * from this hash; no product string appears in the device name. */
+
 static uint64_t ReadMachineHash() {
     WCHAR guid[128] = { 0 };
     DWORD length = sizeof(guid);
@@ -27,8 +28,10 @@ static uint64_t ReadMachineHash() {
 
 static std::wstring BuildDevicePath(uint64_t hash) {
     WCHAR buffer[64] = { 0 };
+
     /* \\.\ prefix (4) + 16 hash digits + NUL must fit; asserted for both C and
      * C++ by the shared protocol header. */
+
     AMGER_ASSERT_NAME_BUFFER(64u, 4u);
     wcscpy_s(buffer, L"\\\\.\\");
     AmgerAppendName(buffer, 64u, hash);
@@ -106,6 +109,7 @@ bool ChannelClient::ConnectUnlocked(size_t requestedSize) {
     /* IRP_MJ_CLOSE is dispatched asynchronously. Reopening immediately after a
      * previous session can reach the driver while its region is still Closing,
      * so registration is retried briefly instead of failing on that race. */
+
     for (unsigned attempt = 0u; attempt < 8u; ++attempt) {
         DisconnectUnlocked();
 
@@ -164,7 +168,9 @@ bool ChannelClient::EnsureRegionUnlocked(size_t requestedSize) {
     if (header != nullptr && regionSize >= requestedSize) {
         return true;
     }
+
     /* The device is persistent, so re-registering on a fresh handle is safe. */
+
     return ConnectUnlocked(requestedSize);
 }
 
@@ -174,10 +180,12 @@ bool ChannelClient::Connected() const {
 }
 
 bool ChannelClient::ProbeDevice() const {
+
     /* Zero desired access is a pure existence probe: it asks the object
      * manager to resolve the derived name without requesting read or write
      * rights, and produces an IRP_MJ_CREATE/CLOSE pair that changes no driver
      * state. A stale cached header in Connected() cannot substitute for this. */
+
     HANDLE probe = CreateFileW(
         devicePath.c_str(),
         0u,
@@ -215,6 +223,7 @@ bool ChannelClient::Ping() {
     const uint32_t status = ReadFinalStatus(header);
 
     /* No polling: the synchronous IOCTL is the completion boundary. */
+
     return kickOk != FALSE &&
            status != AMGER_STATUS_PENDING &&
            status == 0u; /* STATUS_SUCCESS is zero in both environments. */
@@ -228,6 +237,7 @@ uint32_t ChannelClient::LastFault() {
 
     /* Reset the result slot so a stale value from a prior Inject cannot be
      * mistaken for a fault. The driver publishes zero for STATUS when clean. */
+
     volatile AMGER_RESULT_CONTROL* result =
         reinterpret_cast<volatile AMGER_RESULT_CONTROL*>(&header->Reserved[0]);
     result->ResultValue = 0u;
@@ -244,6 +254,7 @@ uint32_t ChannelClient::LastFault() {
     /* Only trust the result slot if the STATUS command actually completed.
      * Otherwise the slot is still the zero we wrote, which would be reported
      * as "no fault" and hide the fact that the query failed. */
+
     const uint32_t status = ReadFinalStatus(header);
     if (kickOk == FALSE || status == AMGER_STATUS_PENDING) {
         return AMGER_CLIENT_STATUS_QUERY_FAILED;
@@ -262,6 +273,7 @@ uint32_t ChannelClient::Inject(uint32_t targetProcessId,
 
     /* Clear any value left by a prior command so a failed inject cannot show a
      * stale remote base. Only a successful, non-PENDING completion overwrites it. */
+
     resultValue = 0u;
 
     if (payload == nullptr || payloadSize == 0u ||
@@ -300,6 +312,7 @@ uint32_t ChannelClient::Inject(uint32_t targetProcessId,
     /* The driver publishes a final status on every path. A driver-side error
      * makes DeviceIoControl fail as well, so the shared header — not the BOOL
      * — is the authoritative result. PENDING means it never answered. */
+
     const uint32_t status = ReadFinalStatus(header);
     if (status == AMGER_STATUS_PENDING) {
         return AMGER_CLIENT_KICK_FAILED;
@@ -333,12 +346,14 @@ std::vector<ChannelClient::LogRecord> ChannelClient::DrainLogs() {
         reinterpret_cast<PUCHAR>(sharedRegion) + regionSize - sizeof(AMGER_LOG_RING));
 
     for (unsigned attempt = 0u; attempt < 4u; ++attempt) {
+
         /* The log ring is NOT a seqlock. The driver writes every field of a
          * record first, issues a barrier, and only then publishes the final
          * sequence (LogStage in Bridge.c). It never marks a record with an odd
          * "writer active" value, so rejecting odd values here silently dropped
          * roughly half of all records, including one-record teardown logs.
          * The before/after double sample below is the real torn-read guard. */
+
         const uint32_t before = ring->Sequence;
         MemoryBarrier();
 
