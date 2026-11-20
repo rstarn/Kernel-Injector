@@ -39,6 +39,12 @@ static KSPIN_LOCK g_regionLock;
  * same ring slot and interleave fields. */
 static KSPIN_LOCK g_logLock;
 static KMUTEX g_commandMutex;
+/* Serializes the whole region-teardown sequence. CLEANUP (bounded), CLOSE
+ * (unbounded) and UNLOAD/DriverUnload can all call ReleaseRegion concurrently
+ * on different IRPs. Without this, one caller can free the MDL while another
+ * still holds a stale logAddress captured at entry, and LogStage writes through
+ * freed pages -> bugcheck 0xA/0x50. All callers are PASSIVE_LEVEL. */
+static KMUTEX g_teardownMutex;
 static AMGER_REGION_STATE g_regionState = RegionStateUnregistered;
 static volatile LONG g_activeOperations = 0;
 static PMDL g_sharedMdl = NULL;
@@ -516,6 +522,7 @@ NTSTATUS BridgeRegisterIoControl(
     KeInitializeSpinLock(&g_regionLock);
     KeInitializeSpinLock(&g_logLock);
     KeInitializeMutex(&g_commandMutex, 0);
+    KeInitializeMutex(&g_teardownMutex, 0);
     /* Reset the one-shot teardown claim at initialization, not in the worker:
      * clearing it in the worker would allow a second queue of this same static
      * WORK_QUEUE_ITEM during the 50 ms delay before it runs. */
@@ -552,30 +559,33 @@ static NTSTATUS ReleaseRegion(BOOLEAN ClearOwner, BOOLEAN BoundedWait) {
     PMDL mdl;
     LARGE_INTEGER interval;
     ULONG waitCount;
-    PVOID logAddress = g_sharedSystemAddress;
-    SIZE_T logRegionSize = g_sharedRegionSize;
+    PVOID logAddress;
+    SIZE_T logRegionSize;
+    NTSTATUS result = STATUS_SUCCESS;
 
     NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
 
+    /* Serialize all teardown: without this, two concurrent callers can both
+     * capture a live logAddress, one frees the MDL, and the other writes through
+     * the now-freed pages -> bugcheck. */
+    KeWaitForSingleObject(&g_teardownMutex, Executive, KernelMode, FALSE, NULL);
+
     interval.QuadPart = -10000LL; /* 1 ms */
+    logAddress = g_sharedSystemAddress;
+    logRegionSize = g_sharedRegionSize;
 
     KeAcquireSpinLock(&g_regionLock, &oldIrql);
     while (g_regionState == RegionStateRegistering) {
         if (BoundedWait) {
-            /* CLEANUP keeps its bounded contract: report busy and let the
-             * worker finish; CLOSE / unload reclaim the region afterwards. */
             KeReleaseSpinLock(&g_regionLock, oldIrql);
             if (logAddress != NULL) {
                 LogStage(logAddress, logRegionSize,
                          (uint16_t)AMGER_LOG_ID_CLEANUP_DRAIN,
                          (uint32_t)STATUS_DEVICE_BUSY, 0u);
             }
-            return STATUS_DEVICE_BUSY;
+            result = STATUS_DEVICE_BUSY;
+            goto done;
         }
-        /* Unbounded path (CLOSE / unload). Proceeding now would let the caller
-         * delete the device while a registration worker still holds a
-         * temporary MDL, so wait out the worker. This runs at PASSIVE_LEVEL
-         * and never holds the spin lock while sleeping. */
         KeReleaseSpinLock(&g_regionLock, oldIrql);
         KeDelayExecutionThread(KernelMode, FALSE, &interval);
         KeAcquireSpinLock(&g_regionLock, &oldIrql);
@@ -583,36 +593,29 @@ static NTSTATUS ReleaseRegion(BOOLEAN ClearOwner, BOOLEAN BoundedWait) {
 
     previous = g_regionState;
     if (previous == RegionStateUnregistered) {
-        /* Nothing is mapped, but CLOSE/unload still owns the connection state.
-         * Drop the owner and closing marker under the lock so a fully released
-         * region is idempotent and can never strand ownership. CLEANUP calls
-         * with ClearOwner == FALSE and deliberately keeps ownership for CLOSE. */
         if (ClearOwner) {
             g_ownerFile = NULL;
             g_connectionClosing = FALSE;
         }
         KeReleaseSpinLock(&g_regionLock, oldIrql);
-        return STATUS_SUCCESS;
+        goto done;
     }
 
-    /* Registered or Closing both proceed: Closing means a previous CLEANUP
-     * timed out while an operation still held a reference, and this call is
-     * the retry from CLOSE or unload. The state never returns to Registered. */
+    /* Registered or Closing both proceed; the state never returns to Registered. */
     g_regionState = RegionStateClosing;
     KeReleaseSpinLock(&g_regionLock, oldIrql);
 
     waitCount = 0u;
     while (InterlockedCompareExchange(&g_activeOperations, 0L, 0L) != 0L) {
         if (BoundedWait && waitCount >= 1000u) {
-            /* Keep Closing and the MDL intact. CLOSE / unload will retry after
-             * the outstanding IRP has completed; no mapping is released here. */
             if (logAddress != NULL) {
                 LogStage(logAddress, logRegionSize,
                          (uint16_t)AMGER_LOG_ID_CLEANUP_DRAIN,
                          (uint32_t)STATUS_TIMEOUT,
                          (uint32_t)InterlockedCompareExchange(&g_activeOperations, 0L, 0L));
             }
-            return STATUS_TIMEOUT;
+            result = STATUS_TIMEOUT;
+            goto done;
         }
         KeDelayExecutionThread(KernelMode, FALSE, &interval);
         if (!BoundedWait) {
@@ -633,8 +636,6 @@ static NTSTATUS ReleaseRegion(BOOLEAN ClearOwner, BOOLEAN BoundedWait) {
         }
     }
 
-    /* Claim the MDL only after the drain succeeded. Competing CLOSE/unload
-     * callers then cannot free the same MDL twice. */
     mdl = (PMDL)InterlockedExchangePointer((PVOID*)&g_sharedMdl, NULL);
     if (mdl != NULL) {
         MmUnlockPages(mdl);
@@ -649,12 +650,12 @@ static NTSTATUS ReleaseRegion(BOOLEAN ClearOwner, BOOLEAN BoundedWait) {
         g_ownerFile = NULL;
         g_connectionClosing = FALSE;
     }
-    /* CLEANUP (ClearOwner == FALSE) leaves the closing marker set until CLOSE
-     * or unload, so a late REGISTER on the same file object is still rejected. */
     g_regionState = RegionStateUnregistered;
     KeReleaseSpinLock(&g_regionLock, oldIrql);
 
-    return STATUS_SUCCESS;
+done:
+    KeReleaseMutex(&g_teardownMutex, FALSE);
+    return result;
 }
 
 NTSTATUS BridgeReleaseResources(VOID) {

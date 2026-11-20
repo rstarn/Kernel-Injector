@@ -93,7 +93,16 @@ const wchar_t* LogIdName(uint16_t id) {
 }
 
 void PrintLogs(const std::vector<ChannelClient::LogRecord>& records) {
+    uint16_t previousId = 0u;
     for (const auto& record : records) {
+        /* Each command's validation phase follows the previous command's RESULT.
+         * Separate the two commands with a blank line so the log reads as
+         * distinct blocks instead of one continuous stream. */
+        if (record.Id == AMGER_LOG_ID_HEADER_VALIDATE &&
+            previousId == AMGER_LOG_ID_RESULT) {
+            Console::WriteRaw(L"\n");
+        }
+
         /* The command-stage records start a second visual group after the
          * validation records. */
         if (record.Id == AMGER_LOG_ID_PING ||
@@ -117,6 +126,8 @@ void PrintLogs(const std::vector<ChannelClient::LogRecord>& records) {
         if (record.Id == AMGER_LOG_ID_REGISTER_COMMIT) {
             Console::WriteRaw(L"\n");
         }
+
+        previousId = record.Id;
     }
 
     if (!records.empty()) {
