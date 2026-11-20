@@ -238,7 +238,10 @@ static NTSTATUS ReadMachineGuid(WCHAR* output, ULONG capacityBytes, USHORT* byte
 }
 
 static void InitializeDerivedNames(VOID) {
-    WCHAR guid[64] = { 0 };
+    /* Same 128-WCHAR capacity the client uses in ReadMachineHash. Both sides
+     * must accept the same MachineGuid length or they derive different names /
+     * hashes / IOCTLs and the client cannot connect at all. */
+    WCHAR guid[128] = { 0 };
     USHORT guidBytes = 0u;
     LARGE_INTEGER now;
     static const WCHAR digits[] = L"0123456789ABCDEF";
@@ -402,18 +405,64 @@ VOID BootstrapReleaseDriverObject(VOID) {
     }
 }
 
-/* Removes the symbolic link. g_discoveryMutex must be held by the caller. */
+/* Removes the symbolic link. g_discoveryMutex must be held by the caller.
+ *
+ * The Win32 link name is derived from MachineGuid and is identical across
+ * maps, while the device object name carries a per-map unique suffix. A fast
+ * unload -> remap inside TeardownWorker's 50 ms delay lets a new map recreate
+ * the SAME name pointing at its NEW device. Deleting by NAME here would then
+ * remove the new map's link and strand its device.
+ *
+ * Instead, open the link with DELETE access, verify its target through that
+ * SAME handle, and delete THAT object instance with ZwMakeTemporaryObject +
+ * ZwClose. Object-manager deletion follows the handle, not a later name
+ * lookup, so even if a remap replaced the name between our open and our close
+ * we can only ever remove the object we verified as ours. Wait-free, no named
+ * mutex, safe at PASSIVE_LEVEL under g_discoveryMutex. */
 static NTSTATUS RemoveDiscoveryLocked(VOID) {
     NTSTATUS status = STATUS_SUCCESS;
 
     if (InterlockedCompareExchange(&g_linkCreated, 0L, 1L) == 1L) {
-        const NTSTATUS linkStatus = IoDeleteSymbolicLink(&g_symbolicLinkName);
-        if (NT_SUCCESS(linkStatus) || linkStatus == STATUS_OBJECT_NAME_NOT_FOUND) {
-            /* The link is gone (or was already absent); nothing to retry. */
-        } else {
-            /* Restore the claim: the link still exists and cleanup must retry. */
+        HANDLE linkHandle = NULL;
+        OBJECT_ATTRIBUTES attributes;
+        WCHAR targetBuffer[128];
+        UNICODE_STRING target;
+
+        InitializeObjectAttributes(&attributes, &g_symbolicLinkName,
+                                   OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE,
+                                   NULL, NULL);
+        status = ZwOpenSymbolicLinkObject(&linkHandle, DELETE | GENERIC_READ,
+                                          &attributes);
+        if (status == STATUS_OBJECT_NAME_NOT_FOUND) {
+            return STATUS_SUCCESS; /* already gone; nothing to retry */
+        }
+        if (!NT_SUCCESS(status)) {
+            /* Cannot open: restore the claim so cleanup can retry. */
             InterlockedExchange(&g_linkCreated, 1L);
-            status = linkStatus;
+            return status;
+        }
+
+        RtlInitEmptyUnicodeString(&target, targetBuffer, sizeof(targetBuffer));
+        status = ZwQuerySymbolicLinkObject(linkHandle, &target, NULL);
+        if (!NT_SUCCESS(status)) {
+            ZwClose(linkHandle);
+            InterlockedExchange(&g_linkCreated, 1L);
+            return status;
+        }
+
+        if (RtlEqualUnicodeString(&target, &g_deviceName, TRUE)) {
+            /* Ours. Make this exact object temporary and drop our handle;
+             * the name and object are removed when the handle count hits zero.
+             * A remap that recreated the name owns a DIFFERENT object, which
+             * this handle does not reference, so it is left untouched. */
+            status = ZwMakeTemporaryObject(linkHandle);
+        }
+        /* Not ours (a newer map's): close without deleting it. */
+        ZwClose(linkHandle);
+
+        if (!NT_SUCCESS(status)) {
+            InterlockedExchange(&g_linkCreated, 1L);
+            return status;
         }
     }
 

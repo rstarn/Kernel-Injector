@@ -20,13 +20,18 @@ set "AMGER_OBJECTS=%AMGER_ROOT%\Build\Output\Objects"
 set "AMGER_ACTION=%~1"
 if "%AMGER_ACTION%"=="" set "AMGER_ACTION=BUILD"
 
+rem Exit code carried to :Finish, which pauses so a double-clicked window does
+rem not vanish before the result (or an error) can be read.
+set "AMGER_EXIT=0"
+
 if /i "%AMGER_ACTION%"=="CLEAN" goto :Clean
 if /i "%AMGER_ACTION%"=="REBUILD" goto :Rebuild
 if /i "%AMGER_ACTION%"=="BUILD" goto :Build
 
 echo Unknown action: %AMGER_ACTION%
 echo Usage: Create.bat [BUILD ^| CLEAN ^| REBUILD]
-exit /b 1
+set "AMGER_EXIT=1"
+goto :Finish
 
 :Clean
 rem Build outputs only; Build\Output itself and any other files in it are kept.
@@ -35,7 +40,7 @@ if exist "%AMGER_OUTPUT%\Driver.sys" del /q "%AMGER_OUTPUT%\Driver.sys"
 if exist "%AMGER_OUTPUT%\Client.exe.manifest" del /q "%AMGER_OUTPUT%\Client.exe.manifest"
 if exist "%AMGER_OBJECTS%" rmdir /s /q "%AMGER_OBJECTS%"
 echo [Ameger] Clean complete.
-exit /b 0
+goto :Finish
 
 :Rebuild
 if exist "%AMGER_OUTPUT%\Client.exe" del /q "%AMGER_OUTPUT%\Client.exe"
@@ -53,7 +58,8 @@ rem it reproducible from the protocol tables instead of hand-maintained.
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%AMGER_ROOT%\Build\Scripts\Lexicon.ps1" "%AMGER_ROOT%"
 if errorlevel 1 (
     echo [Ameger] ERROR: Lexicon.ps1 failed.
-    exit /b 1
+    set "AMGER_EXIT=1"
+    goto :Finish
 )
 
 rem --- Locate the Visual Studio x64 build environment -----------------------
@@ -71,12 +77,14 @@ if not defined AMGER_VCVARS (
 )
 if not defined AMGER_VCVARS (
     echo [Ameger] ERROR: vcvars64.bat not found. Install Visual Studio Build Tools with the v145 C++ toolset.
-    exit /b 1
+    set "AMGER_EXIT=1"
+    goto :Finish
 )
 call "%AMGER_VCVARS%" >nul 2>&1
 if errorlevel 1 (
     echo [Ameger] ERROR: Visual Studio environment initialization failed.
-    exit /b 1
+    set "AMGER_EXIT=1"
+    goto :Finish
 )
 where cl.exe >nul 2>&1
 if errorlevel 1 goto :Failed
@@ -92,7 +100,8 @@ for /f "delims=" %%i in ('dir /b /ad /o-n "C:\Program Files (x86)\Windows Kits\1
 )
 if not defined AMGER_WDK_VERSION (
     echo [Ameger] ERROR: WDK kernel headers not found.
-    exit /b 1
+    set "AMGER_EXIT=1"
+    goto :Finish
 )
 
 set "AMGER_KM_INCLUDE=C:\Program Files (x86)\Windows Kits\10\Include\%AMGER_WDK_VERSION%\km"
@@ -169,12 +178,20 @@ if errorlevel 1 goto :Failed
 
 echo [Ameger] Build complete.
 dir "%AMGER_OUTPUT%"
-exit /b 0
+goto :Finish
 
 :WdkMissing
 echo [Ameger] ERROR: WDK %AMGER_WDK_VERSION% is incomplete (headers or x64 kernel libraries missing).
-exit /b 1
+set "AMGER_EXIT=1"
+goto :Finish
 
 :Failed
 echo [Ameger] BUILD FAILED.
-exit /b 1
+set "AMGER_EXIT=1"
+goto :Finish
+
+:Finish
+rem Keep the window open on double-click so the build result can be read.
+echo.
+pause
+exit /b %AMGER_EXIT%
