@@ -41,12 +41,12 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <TargetName>Client</TargetName>
     <OutDir>$(ProjectDir)..\Output\</OutDir>
-    <IntDir>$(ProjectDir)..\Objects\Client\Debug\</IntDir>
+    <IntDir>$(ProjectDir)..\Output\Objects\Client\Debug\</IntDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <TargetName>Client</TargetName>
     <OutDir>$(ProjectDir)..\Output\</OutDir>
-    <IntDir>$(ProjectDir)..\Objects\Client\Release\</IntDir>
+    <IntDir>$(ProjectDir)..\Output\Objects\Client\Release\</IntDir>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>

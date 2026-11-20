@@ -1,8 +1,8 @@
 # Build artifacts (Phase 1)
-# Build.bat produces these two trees; MSBuild (Build/Project/Client.vcxproj)
-# also writes intermediates under Build/Objects/Client/.
+# Build.bat writes binaries and intermediates under Build/Output/ (including
+# Output\Objects\); MSBuild (Build/Project/Client.vcxproj) writes its
+# intermediates under Build/Output/Objects/Client/. The whole tree is ignored.
 Build/Output/
-Build/Objects/
 
 # MSBuild / linker intermediates (defense in depth if an output dir moves)
 *.tlog

@@ -10,13 +10,13 @@ rem the ones below, so nothing can drift from the build.
 rem Outputs:
 rem   Build\Output\Client.exe
 rem   Build\Output\Driver.sys
-rem CLEAN/REBUILD remove only these build outputs (plus Build\Objects); every
+rem CLEAN/REBUILD remove only these build outputs (plus Build\Output\Objects); every
 rem other file in Build\Output (crash dumps, reports, analysis logs) is kept.
 rem ===========================================================================
 
 set "AMGER_ROOT=%~dp0.."
 set "AMGER_OUTPUT=%AMGER_ROOT%\Build\Output"
-set "AMGER_OBJECTS=%AMGER_ROOT%\Build\Objects"
+set "AMGER_OBJECTS=%AMGER_ROOT%\Build\Output\Objects"
 set "AMGER_ACTION=%~1"
 if "%AMGER_ACTION%"=="" set "AMGER_ACTION=BUILD"
 
