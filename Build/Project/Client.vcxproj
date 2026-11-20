@@ -40,13 +40,13 @@
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <TargetName>Client</TargetName>
-    <OutDir>$(ProjectDir)..\Build\Output\</OutDir>
-    <IntDir>$(ProjectDir)..\Build\Objects\Client\Debug\</IntDir>
+    <OutDir>$(ProjectDir)..\Output\</OutDir>
+    <IntDir>$(ProjectDir)..\Objects\Client\Debug\</IntDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <TargetName>Client</TargetName>
-    <OutDir>$(ProjectDir)..\Build\Output\</OutDir>
-    <IntDir>$(ProjectDir)..\Build\Objects\Client\Release\</IntDir>
+    <OutDir>$(ProjectDir)..\Output\</OutDir>
+    <IntDir>$(ProjectDir)..\Objects\Client\Release\</IntDir>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
@@ -54,7 +54,7 @@
       <ExceptionHandling>Sync</ExceptionHandling>
       <LanguageStandard>stdcpp17</LanguageStandard><AdditionalOptions>/utf-8</AdditionalOptions>
       <PreprocessorDefinitions>UNICODE;_UNICODE;WIN32_LEAN_AND_MEAN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\Shared;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\..\Shared;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <SDLCheck>false</SDLCheck>
     </ClCompile>
     <Link>
@@ -71,7 +71,7 @@
       <ExceptionHandling>Sync</ExceptionHandling>
       <LanguageStandard>stdcpp17</LanguageStandard><AdditionalOptions>/utf-8</AdditionalOptions>
       <PreprocessorDefinitions>UNICODE;_UNICODE;WIN32_LEAN_AND_MEAN;NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\Shared;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\..\Shared;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <SDLCheck>false</SDLCheck>
     </ClCompile>
     <Link>
@@ -83,16 +83,16 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="$(ProjectDir)..\Client\Application\Main.cpp" />
-    <ClCompile Include="$(ProjectDir)..\Client\Interface\Console.cpp" />
-    <ClCompile Include="$(ProjectDir)..\Client\Utilities\Process.cpp" />
-    <ClCompile Include="$(ProjectDir)..\Client\Transport\Channel.cpp" />
+    <ClCompile Include="$(ProjectDir)..\..\Client\Application\Main.cpp" />
+    <ClCompile Include="$(ProjectDir)..\..\Client\Interface\Console.cpp" />
+    <ClCompile Include="$(ProjectDir)..\..\Client\Utilities\Process.cpp" />
+    <ClCompile Include="$(ProjectDir)..\..\Client\Transport\Channel.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="$(ProjectDir)..\Client\Interface\Console.hpp" />
-    <ClInclude Include="$(ProjectDir)..\Client\Utilities\Process.hpp" />
-    <ClInclude Include="$(ProjectDir)..\Client\Transport\Channel.hpp" />
-    <ClInclude Include="$(ProjectDir)..\Shared\Protocol.h" />
+    <ClInclude Include="$(ProjectDir)..\..\Client\Interface\Console.hpp" />
+    <ClInclude Include="$(ProjectDir)..\..\Client\Utilities\Process.hpp" />
+    <ClInclude Include="$(ProjectDir)..\..\Client\Transport\Channel.hpp" />
+    <ClInclude Include="$(ProjectDir)..\..\Shared\Protocol.h" />
   </ItemGroup>
   <ItemGroup>
     <Manifest Include="$(ProjectDir)Client.exe.manifest" />

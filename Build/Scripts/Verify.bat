@@ -2,13 +2,14 @@
 setlocal enabledelayedexpansion
 rem ===========================================================================
 rem Verify.bat - static stealth/consistency checks on the shipped binaries.
+rem Lives in Build\Scripts\.
 rem Usage: Verify.bat
 rem Checks: no product brand strings, no plaintext diagnostic labels in the
 rem client, no Event Log API in the driver, and both binaries present.
 rem Exits 0 on all-pass, 1 on any failure.
 rem ===========================================================================
 
-set "AMGER_ROOT=%~dp0.."
+set "AMGER_ROOT=%~dp0..\.."
 set "OUT=%AMGER_ROOT%\Build\Output"
 set "DRIVER=%OUT%\Driver.sys"
 set "CLIENT=%OUT%\Client.exe"

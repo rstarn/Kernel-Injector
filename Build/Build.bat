@@ -50,7 +50,7 @@ if not exist "%AMGER_OBJECTS%" mkdir "%AMGER_OBJECTS%"
 rem --- Regenerate obfuscated label header from Shared\Protocol.h -------------
 rem Lexicon.hpp holds XOR-encoded diagnostic labels; regenerating it here keeps
 rem it reproducible from the protocol tables instead of hand-maintained.
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%AMGER_ROOT%\Build\GenLexicon.ps1" "%AMGER_ROOT%"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%AMGER_ROOT%\Build\Scripts\GenLexicon.ps1" "%AMGER_ROOT%"
 if errorlevel 1 (
     echo [Ameger] ERROR: GenLexicon.ps1 failed.
     exit /b 1
@@ -134,7 +134,7 @@ rem Remove a sidecar left by an older build; Output must contain binaries only.
 if exist "%AMGER_OUTPUT%\Client.exe.manifest" del /q "%AMGER_OUTPUT%\Client.exe.manifest"
 
 rem Embed the source manifest with requireAdministrator so the client matches the device DACL.
-mt.exe -nologo -manifest "%AMGER_ROOT%\Build\Client.exe.manifest" "-outputresource:%AMGER_OUTPUT%\Client.exe;#1"
+mt.exe -nologo -manifest "%AMGER_ROOT%\Build\Project\Client.exe.manifest" "-outputresource:%AMGER_OUTPUT%\Client.exe;#1"
 if errorlevel 1 goto :Failed
 
 rem --- Driver.sys ----------------------------------------------------
