@@ -1,8 +1,10 @@
 # Build artifacts (Phase 1)
-# Build.bat writes binaries and intermediates under Build/Output/ (including
-# Output\Objects\); MSBuild (Build/Project/Client.vcxproj) writes its
-# intermediates under Build/Output/Objects/Client/. The whole tree is ignored.
-Build/Output/
+# Ignore only the generated contents of Build/Output/, not the directory itself:
+# Client.exe and Driver.sys are the shipped binaries; Objects\ holds all Build.bat
+# and MSBuild intermediates (including Objects\Client\Release\).
+Build/Output/Client.exe
+Build/Output/Driver.sys
+Build/Output/Objects/
 
 # MSBuild / linker intermediates (defense in depth if an output dir moves)
 *.tlog
