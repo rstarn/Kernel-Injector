@@ -329,9 +329,14 @@ std::vector<ChannelClient::LogRecord> ChannelClient::DrainLogs() {
     volatile AMGER_LOG_RING* ring = reinterpret_cast<volatile AMGER_LOG_RING*>(
         reinterpret_cast<PUCHAR>(sharedRegion) + regionSize - sizeof(AMGER_LOG_RING));
 
-    for (unsigned attempt = 0u; attempt < 2u; ++attempt) {
+    for (unsigned attempt = 0u; attempt < 4u; ++attempt) {
         const uint32_t before = ring->Sequence;
         MemoryBarrier();
+        /* An odd sequence means the writer is mid-record; do not treat it as a
+         * stable snapshot. The driver publishes even values only. */
+        if ((before & 1u) != 0u) {
+            continue;
+        }
 
         records.clear();
         for (size_t index = 0u; index < AMGER_LOG_ENTRY_COUNT; ++index) {

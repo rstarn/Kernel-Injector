@@ -128,9 +128,17 @@ void PrintLogs(const std::vector<ChannelClient::LogRecord>& records) {
  * Assets. Deriving from the module path keeps the location relative to the
  * install regardless of the process working directory. */
 std::wstring ResolveTargetPath() {
-    wchar_t modulePath[MAX_PATH] = {};
-    const DWORD length = GetModuleFileNameW(nullptr, modulePath, MAX_PATH);
-    std::wstring directory(modulePath, length);
+    /* Grow until the whole path fits; a MAX_PATH-sized buffer with a truncated
+     * return would derive the wrong directory (or none). */
+    std::vector<wchar_t> modulePath(MAX_PATH);
+    DWORD length = GetModuleFileNameW(nullptr, modulePath.data(),
+                                      static_cast<DWORD>(modulePath.size()));
+    while (length >= modulePath.size()) {
+        modulePath.resize(modulePath.size() * 2u);
+        length = GetModuleFileNameW(nullptr, modulePath.data(),
+                                    static_cast<DWORD>(modulePath.size()));
+    }
+    std::wstring directory(modulePath.data(), length);
     for (unsigned level = 0u; level < 3u; ++level) {
         const size_t separator = directory.find_last_of(L"\\/");
         if (separator == std::wstring::npos) {
@@ -366,10 +374,13 @@ int wmain() {
     for (;;) {
         ShowMainScreen();
         const std::wstring input = Trim(Console::ReadLine(L"Input: ", Console::Brush::Orange));
-        if (std::wcin.eof()) {
-            break;
-        }
+        /* A redirected final line without a trailing newline sets eof() while
+         * still returning its text. Process that text; only an empty read at
+         * EOF ends the loop. */
         if (input.empty()) {
+            if (std::wcin.eof()) {
+                break;
+            }
             continue;
         }
 

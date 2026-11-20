@@ -33,6 +33,11 @@ typedef struct _AMGER_STATUS_WRITE_CONTEXT {
 } AMGER_STATUS_WRITE_CONTEXT, * PAMGER_STATUS_WRITE_CONTEXT;
 
 static KSPIN_LOCK g_regionLock;
+/* Serializes the log-ring read/select/write/publish sequence. KICK-originated
+ * writers are already serialized by g_commandMutex, but REGISTER/CLEANUP/CLOSE/
+ * UNLOAD/TeardownWriter call LogStage without it and could otherwise choose the
+ * same ring slot and interleave fields. */
+static KSPIN_LOCK g_logLock;
 static KMUTEX g_commandMutex;
 static AMGER_REGION_STATE g_regionState = RegionStateUnregistered;
 static volatile LONG g_activeOperations = 0;
@@ -399,8 +404,13 @@ static VOID LogStage(PVOID SystemAddress,
                      uint32_t Detail) {
     volatile AMGER_LOG_RING* ring = (volatile AMGER_LOG_RING*)(
         (PUCHAR)SystemAddress + RegionSize - sizeof(AMGER_LOG_RING));
-    uint32_t sequence = (uint32_t)InterlockedCompareExchange(
-        (volatile long*)&ring->Sequence, 0L, 0L);
+    KIRQL oldIrql;
+
+    /* Keep slot selection and publication atomic with respect to other writers.
+     * The ring lives in MDL-locked, system-mapped pages, so it is safe to touch
+     * at the raised IRQL of a spinlock. */
+    KeAcquireSpinLock(&g_logLock, &oldIrql);
+    uint32_t sequence = ring->Sequence;
     volatile AMGER_LOG_ENTRY* entry =
         &ring->Entries[sequence % AMGER_LOG_ENTRY_COUNT];
 
@@ -411,7 +421,8 @@ static VOID LogStage(PVOID SystemAddress,
     entry->Status = Status;
     entry->Detail = Detail;
     MemoryBarrier();
-    InterlockedExchange((volatile long*)&ring->Sequence, (long)sequence);
+    ring->Sequence = sequence;
+    KeReleaseSpinLock(&g_logLock, oldIrql);
 }
 
 static NTSTATUS KickWorker(PVOID ContextParameter) {
@@ -503,6 +514,7 @@ NTSTATUS BridgeRegisterIoControl(
     }
 
     KeInitializeSpinLock(&g_regionLock);
+    KeInitializeSpinLock(&g_logLock);
     KeInitializeMutex(&g_commandMutex, 0);
     /* Reset the one-shot teardown claim at initialization, not in the worker:
      * clearing it in the worker would allow a second queue of this same static

@@ -329,7 +329,12 @@ static NTSTATUS BootstrapCreateDriver(
      * symbolic link exposes it. A failure here leaves no name to reach it. */
     status = ApplyDeviceSecurity(g_deviceObject);
     if (!NT_SUCCESS(status)) {
-        (void)BootstrapDestroyDevice();
+        /* Preserve the security failure; record any device-deletion failure so
+         * cleanup is never silent, matching the symbolic-link path below. */
+        const NTSTATUS cleanupStatus = BootstrapDestroyDevice();
+        if (!NT_SUCCESS(cleanupStatus)) {
+            ReportLifecycleFailure(cleanupStatus);
+        }
         return status;
     }
 
@@ -384,6 +389,11 @@ VOID BootstrapReleaseDriverObject(VOID) {
         (PVOID*)&g_driverObject, NULL);
 
     if (driver != NULL) {
+        /* Defensive: clear the unload routine before dropping the final
+         * reference. If any object-delete path were to invoke DriverUnload, it
+         * would be a no-op; all teardown here is already idempotent, but this
+         * removes even the speculative re-entry. DriverEntry installed it. */
+        driver->DriverUnload = NULL;
         /* Drops the single reference IoCreateDriver returned to us. Callers
          * must have deleted the device object first: its creation took its own
          * reference on the driver object. Idempotent because the claim above
