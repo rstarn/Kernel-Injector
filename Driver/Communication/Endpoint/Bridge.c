@@ -45,6 +45,23 @@ static KMUTEX g_commandMutex;
  * still holds a stale logAddress captured at entry, and LogStage writes through
  * freed pages -> bugcheck 0xA/0x50. All callers are PASSIVE_LEVEL. */
 static KMUTEX g_teardownMutex;
+
+/* Tracks in-flight IRPs so deferred teardown can WAIT for them to drain instead
+ * of sleeping a fixed 50 ms. Each device dispatch acquires this lock on entry
+ * and releases it after completing the IRP; TeardownWorker calls
+ * IoReleaseRemoveLockAndWait so IoDeleteDevice only runs once no dispatch is
+ * still touching the region/device. Once drained, further acquisitions fail
+ * with STATUS_DELETE_PENDING, which the entry wrappers turn into a clean IRP
+ * completion. */
+static IO_REMOVE_LOCK g_removeLock;
+
+/* Entry wrappers are defined at the end of this file (they call the dispatch
+ * routines below, so they must appear after them). */
+static NTSTATUS DefaultDispatchEntry(PDEVICE_OBJECT DeviceObject, PIRP Irp);
+static NTSTATUS CleanupDispatchEntry(PDEVICE_OBJECT DeviceObject, PIRP Irp);
+static NTSTATUS CloseDispatchEntry(PDEVICE_OBJECT DeviceObject, PIRP Irp);
+static NTSTATUS BridgeDispatchEntry(PDEVICE_OBJECT DeviceObject, PIRP Irp);
+
 static AMGER_REGION_STATE g_regionState = RegionStateUnregistered;
 static volatile LONG g_activeOperations = 0;
 static PMDL g_sharedMdl = NULL;
@@ -68,15 +85,24 @@ static WORK_QUEUE_ITEM g_teardownWorkItem;
 static BOOLEAN g_teardownQueued = FALSE;
 
 static VOID TeardownWorker(PVOID Context) {
-    LARGE_INTEGER delay;
-
     UNREFERENCED_PARAMETER(Context);
 
-    /* The work item may start before IoCompleteRequest returns from the UNLOAD
-     * dispatch and before the client's CLOSE IRP is delivered. Give both a
-     * window to retire so IoDeleteDevice never runs with an IRP in flight. */
-    delay.QuadPart = -50000LL; /* 50 ms */
-    KeDelayExecutionThread(KernelMode, FALSE, &delay);
+    /* Wait until every in-flight IRP has left its dispatch before deleting the
+     * device. This replaces the old fixed 50 ms sleep: IoAcquireRemoveLock +
+     * IoReleaseRemoveLockAndWait is the I/O manager's own synchronization, so
+     * teardown proceeds exactly when the last IRP (including the UNLOAD IRP
+     * still completing and the client's CLOSE IRP) has drained - never early,
+     * never by guessing a duration. Once this returns, no new IRP can acquire
+     * the lock (they fail STATUS_DELETE_PENDING), so deletion is race-free. */
+    {
+        NTSTATUS drainStatus = IoAcquireRemoveLock(&g_removeLock, NULL);
+        if (NT_SUCCESS(drainStatus)) {
+            IoReleaseRemoveLockAndWait(&g_removeLock, NULL);
+        } else {
+            /* Lock already drained/being drained by another teardown path. */
+            BootstrapReportCleanupFailure(drainStatus);
+        }
+    }
 
     {
         const NTSTATUS regionStatus = BridgeReleaseResources();
@@ -523,14 +549,18 @@ NTSTATUS BridgeRegisterIoControl(
     KeInitializeSpinLock(&g_logLock);
     KeInitializeMutex(&g_commandMutex, 0);
     KeInitializeMutex(&g_teardownMutex, 0);
+    IoInitializeRemoveLock(&g_removeLock, (ULONG)'grmA', 0u, 0u);
     /* Reset the one-shot teardown claim at initialization, not in the worker:
      * clearing it in the worker would allow a second queue of this same static
-     * WORK_QUEUE_ITEM during the 50 ms delay before it runs. */
+     * WORK_QUEUE_ITEM before TeardownWorker gets to run. */
     g_teardownQueued = FALSE;
-    DriverObject->MajorFunction[IRP_MJ_CREATE] = DefaultDispatch;
-    DriverObject->MajorFunction[IRP_MJ_CLEANUP] = CleanupDispatch;
-    DriverObject->MajorFunction[IRP_MJ_CLOSE] = CloseDispatch;
-    DriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL] = BridgeDispatch;
+    /* Install the remove-lock entry wrappers, not the raw dispatch routines.
+     * Each wrapper holds an IRP reference for the whole dispatch so the
+     * deferred teardown can drain them with IoReleaseRemoveLockAndWait. */
+    DriverObject->MajorFunction[IRP_MJ_CREATE] = DefaultDispatchEntry;
+    DriverObject->MajorFunction[IRP_MJ_CLEANUP] = CleanupDispatchEntry;
+    DriverObject->MajorFunction[IRP_MJ_CLOSE] = CloseDispatchEntry;
+    DriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL] = BridgeDispatchEntry;
 
     return STATUS_SUCCESS;
 }
@@ -747,7 +777,7 @@ NTSTATUS BridgeDispatch(PDEVICE_OBJECT DeviceObject, PIRP Irp) {
             (PAMGER_SHARED_REGION_REQUEST)Irp->AssociatedIrp.SystemBuffer;
         context.OwnerFile = stack->FileObject;
 
-        status = GuardExecute(RegistrationWorker, &context);
+        status = GuardExecute(RegistrationWorker, &context, TRUE); /* probes user MDL */
         if (!NT_SUCCESS(status)) {
             if (context.SystemAddress != NULL) {
                 LogStage(context.SystemAddress, (SIZE_T)context.Request.Size,
@@ -820,7 +850,7 @@ NTSTATUS BridgeDispatch(PDEVICE_OBJECT DeviceObject, PIRP Irp) {
 
         context.Header = header;
         context.Status = AMGER_STATUS_PENDING;
-        status = GuardExecute(KickWorker, &context);
+        status = GuardExecute(KickWorker, &context, FALSE); /* never probes user memory */
 
         /* Always publish a final, non-pending status on every execution path.
          * Every write to the mapped header occurs while the operation reference
@@ -830,7 +860,7 @@ NTSTATUS BridgeDispatch(PDEVICE_OBJECT DeviceObject, PIRP Irp) {
         writeContext.Status = (context.Status != AMGER_STATUS_PENDING)
                                   ? context.Status
                                   : (uint32_t)status;
-        writeStatus = GuardExecute(WriteStatusWorker, &writeContext);
+        writeStatus = GuardExecute(WriteStatusWorker, &writeContext, FALSE); /* MDL-locked only */
         KeReleaseMutex(&g_commandMutex, FALSE);
 
         RegionEndOperation();
@@ -908,4 +938,56 @@ NTSTATUS BridgeDispatch(PDEVICE_OBJECT DeviceObject, PIRP Irp) {
     } else {
         return CompleteIrp(Irp, STATUS_INVALID_DEVICE_REQUEST, 0u);
     }
+}
+
+/* Remove-lock entry wrappers.
+ *
+ * Each holds a remove-lock reference across the entire dispatch, including
+ * IoCompleteRequest, so TeardownWorker's IoReleaseRemoveLockAndWait cannot
+ * delete the device while any IRP is still in flight. If the lock has already
+ * been drained (teardown began), IoAcquireRemoveLock fails and the IRP is
+ * completed with that status instead of touching a device being torn down.
+ * The real dispatch routines below are unchanged; these only bracket them. */
+static NTSTATUS DefaultDispatchEntry(PDEVICE_OBJECT DeviceObject, PIRP Irp) {
+    NTSTATUS acquired = IoAcquireRemoveLock(&g_removeLock, Irp);
+    NTSTATUS status;
+    if (!NT_SUCCESS(acquired)) {
+        return CompleteIrp(Irp, acquired, 0u);
+    }
+    status = DefaultDispatch(DeviceObject, Irp);
+    IoReleaseRemoveLock(&g_removeLock, Irp);
+    return status;
+}
+
+static NTSTATUS CleanupDispatchEntry(PDEVICE_OBJECT DeviceObject, PIRP Irp) {
+    NTSTATUS acquired = IoAcquireRemoveLock(&g_removeLock, Irp);
+    NTSTATUS status;
+    if (!NT_SUCCESS(acquired)) {
+        return CompleteIrp(Irp, acquired, 0u);
+    }
+    status = CleanupDispatch(DeviceObject, Irp);
+    IoReleaseRemoveLock(&g_removeLock, Irp);
+    return status;
+}
+
+static NTSTATUS CloseDispatchEntry(PDEVICE_OBJECT DeviceObject, PIRP Irp) {
+    NTSTATUS acquired = IoAcquireRemoveLock(&g_removeLock, Irp);
+    NTSTATUS status;
+    if (!NT_SUCCESS(acquired)) {
+        return CompleteIrp(Irp, acquired, 0u);
+    }
+    status = CloseDispatch(DeviceObject, Irp);
+    IoReleaseRemoveLock(&g_removeLock, Irp);
+    return status;
+}
+
+static NTSTATUS BridgeDispatchEntry(PDEVICE_OBJECT DeviceObject, PIRP Irp) {
+    NTSTATUS acquired = IoAcquireRemoveLock(&g_removeLock, Irp);
+    NTSTATUS status;
+    if (!NT_SUCCESS(acquired)) {
+        return CompleteIrp(Irp, acquired, 0u);
+    }
+    status = BridgeDispatch(DeviceObject, Irp);
+    IoReleaseRemoveLock(&g_removeLock, Irp);
+    return status;
 }

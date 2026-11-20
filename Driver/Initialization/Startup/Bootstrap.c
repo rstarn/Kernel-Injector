@@ -60,6 +60,15 @@ static UNICODE_STRING g_deviceName;
 static UNICODE_STRING g_symbolicLinkName;
 static WCHAR g_deviceNameBuffer[64];
 static WCHAR g_linkNameBuffer[64];
+
+/* Both names are "\Device\"/"\DosDevices\" prefixes followed by the 16 hash
+ * digits. The device name additionally gets an 8-digit per-map unique suffix
+ * (see InitializeDerivedNames), so assert that worst case here. 64 wchar_t is
+ * ample for both, but keep the contract explicit so a future buffer shrink
+ * cannot silently truncate a name and break client/driver agreement. */
+AMGER_STATIC_ASSERT(ARRAYSIZE(g_deviceNameBuffer) >= 8u + AMGER_NAME_DIGITS + 8u + 1u,
+                    "device name buffer too small for prefix + hash + unique suffix + NUL");
+AMGER_ASSERT_NAME_BUFFER(ARRAYSIZE(g_linkNameBuffer), 12u);
 static uint64_t g_machineHash = 0u;
 static volatile LONG g_linkCreated = 0;
 static BOOLEAN g_active = FALSE;

@@ -17,17 +17,22 @@
 typedef NTSTATUS (* AMGER_EXCEPTION_GUARDED_WORKER)(PVOID Context);
 
 /*
- * Contract: runs Worker inside a __try/__except frame.
- * Inputs: Worker callback and its opaque Context.
- * Outputs: the worker's NTSTATUS, or STATUS_ACCESS_VIOLATION on exception.
+ * Contract: runs Worker inside a __try/__except frame and classifies faults.
+ * Inputs: Worker callback, its opaque Context, and ExpectProbeFault - TRUE only
+ *         for workers that probe user memory (MmProbeAndLockPages), where an
+ *         access violation is the expected rejection path.
+ * Outputs: the worker's NTSTATUS; on exception, STATUS_INVALID_PARAMETER for an
+ *          expected probe fault or STATUS_UNSUCCESSFUL for an unexpected fault.
+ *          The exception code and class are logged via DbgPrintEx.
  * Failure modes: STATUS_INVALID_PARAMETER for a null Worker.
  */
 NTSTATUS GuardExecute(
     AMGER_EXCEPTION_GUARDED_WORKER Worker,
-    PVOID Context);
+    PVOID Context,
+    BOOLEAN ExpectProbeFault);
 
 /* Begin/end markers for inline guarded regions that must return directly. */
 #define AMGER_SEH_BEGIN __try {
-#define AMGER_SEH_END } __except (EXCEPTION_EXECUTE_HANDLER) { return STATUS_ACCESS_VIOLATION; }
+#define AMGER_SEH_END } __except (EXCEPTION_EXECUTE_HANDLER) { return STATUS_UNSUCCESSFUL; }
 
 #endif /* AMGER_GUARD_H */

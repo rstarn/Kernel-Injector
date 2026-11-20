@@ -27,6 +27,9 @@ static uint64_t ReadMachineHash() {
 
 static std::wstring BuildDevicePath(uint64_t hash) {
     WCHAR buffer[64] = { 0 };
+    /* \\.\ prefix (4) + 16 hash digits + NUL must fit; asserted for both C and
+     * C++ by the shared protocol header. */
+    AMGER_ASSERT_NAME_BUFFER(64u, 4u);
     wcscpy_s(buffer, L"\\\\.\\");
     AmgerAppendName(buffer, 64u, hash);
     return buffer;

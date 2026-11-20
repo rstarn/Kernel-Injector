@@ -169,7 +169,23 @@ static __inline uint64_t AmgerMachineHash(const wchar_t* text, size_t length) {
     return hash;
 }
 
-/* Appends sixteen hex digits to an already-populated namespace prefix. */
+/* Minimum destination capacity for AmgerAppendName: the bytes already written
+ * (the prefix), the AMGER_NAME_DIGITS hex digits it appends, and the trailing
+ * NUL. Every caller must guarantee at least this much room; call sites assert
+ * it at compile time. */
+#define AMGER_APPEND_NAME_CAPACITY(prefix_length) \
+    ((prefix_length) + AMGER_NAME_DIGITS + 1u)
+/* Assert a destination buffer has room for a prefix of prefix_length wchar_t,
+ * the appended digits, and the NUL. Widen wcslen(prefix) as the caller's
+ * compile-time constant (e.g. the literal length, not a runtime value). */
+#define AMGER_ASSERT_NAME_BUFFER(buffer_elems, prefix_length) \
+    AMGER_STATIC_ASSERT((buffer_elems) >= AMGER_APPEND_NAME_CAPACITY(prefix_length), \
+                        "name buffer too small for prefix + digits + NUL")
+
+/* Appends sixteen hex digits to an already-populated namespace prefix.
+ * `capacity` is the total buffer size in wchar_t; the function never writes
+ * past it, but a buffer smaller than AMGER_APPEND_NAME_CAPACITY would truncate
+ * the name and break agreement between the two sides. */
 static __inline void AmgerAppendName(wchar_t* buffer, size_t capacity, uint64_t value) {
     static const wchar_t digits[] = L"0123456789ABCDEF";
     size_t used = 0u;
