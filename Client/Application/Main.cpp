@@ -234,16 +234,16 @@ void InjectScreen(Session& session) {
         Console::WriteLine(text, Console::Brush::LightRed);
     }
 
-    /* The INJECT command has already been issued above (line 212), so this is
+    /* The INJECT command has already been issued above, so this is
      * NOT a cancellation prompt - answering N cannot undo anything. The injection
      * engine is deferred, so word it as a status note rather than asking for a
      * decision that has no effect. Kept as an interaction so the existing menu
      * flow (which expects a keypress here) is unchanged. */
 
-    Console::WriteRaw(L"\n");
     Console::WriteText(L"Injection Engine: ", Console::Brush::Silver);
     Console::WriteLine(L"deferred (payload submitted to the driver above).",
                        Console::Brush::LightYellow);
+    Console::WriteRaw(L"\n");
     Console::WriteText(L"Press Enter to continue...", Console::Brush::Gray);
     (void)Console::ReadLine(L"", Console::Brush::Silver);
 

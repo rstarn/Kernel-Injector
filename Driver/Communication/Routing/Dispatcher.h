@@ -6,8 +6,8 @@
  *
  * Contract: interprets one kernel-local command snapshot plus the validated
  * system mapping of its payload, and returns its NTSTATUS through OutStatus.
- * PING is implemented. INJECT validates the full request and reports that the
- * mapping engine is not yet linked; EJECT and STATUS remain unimplemented.
+ * PING and STATUS are implemented. INJECT validates the full request and reports
+ * that the mapping engine is not yet linked; EJECT remains unimplemented.
  * Inputs: dispatch context (snapshot + payload mapping) and output status.
  * Outputs: NTSTATUS mirrored in *OutStatus on every path.
  * Failure modes: null arguments produce STATUS_INVALID_PARAMETER without
@@ -44,8 +44,8 @@ typedef struct _AMGER_DISPATCH_CONTEXT {
  * Contract: maps a validated dispatch context to an NTSTATUS.
  * Inputs: Context (never user-owned), OutStatus receives the final value.
  * Outputs: NTSTATUS equal to *OutStatus.
- * Failure modes: null arguments yield STATUS_INVALID_PARAMETER; unknown or
- * unimplemented commands yield STATUS_INVALID_PARAMETER / STATUS_NOT_IMPLEMENTED.
+ * Failure modes: null arguments yield STATUS_INVALID_PARAMETER; an unknown command
+ * yields STATUS_INVALID_PARAMETER and EJECT yields STATUS_NOT_IMPLEMENTED.
  */
 
 NTSTATUS DispatcherDispatch(

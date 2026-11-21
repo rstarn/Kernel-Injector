@@ -175,7 +175,7 @@ static NTSTATUS InitializeBootstrapSecurity(
 
     /* SE_DACL_PROTECTED is not applied here: the device is created fresh and
      * inherits nothing from an existing object, so the explicit DACL is all
-     * obApplySecurityDescriptor installs. */
+     * ObSetSecurityObjectByPointer installs. */
 
     return STATUS_SUCCESS;
 }
