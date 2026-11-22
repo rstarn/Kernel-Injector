@@ -4,6 +4,7 @@
 #include "../../Initialization/Startup/Bootstrap.h"
 #include "../../Utilities/Guard.h"
 #include "../../../Shared/Protocol.h"
+#include "../../Utilities/Parser/Format.h"
 
 typedef enum _AMGER_REGION_STATE {
     RegionStateUnregistered = 0,
@@ -436,7 +437,8 @@ static NTSTATUS ValidatePayloadRange(const AMGER_COMMAND_SNAPSHOT* Snapshot) {
 
     /* The log tail is never part of the payload. */
 
-    payloadEnd = regionStart + (uint64_t)g_sharedRegionSize - AMGER_LOG_AREA_SIZE;
+    payloadEnd = regionStart + (uint64_t)g_sharedRegionSize -
+                 AMGER_LOG_AREA_SIZE - AMGER_REPORT_AREA_SIZE;
     payloadStart = Snapshot->PayloadVirtualAddress;
 
     /* Subtraction form avoids overflow from a hostile PayloadSize. */
@@ -511,6 +513,10 @@ static NTSTATUS KickWorker(PVOID ContextParameter) {
         PAMGER_RESULT_CONTROL result =
             (PAMGER_RESULT_CONTROL)&context->Header->Reserved[0];
         result->ResultValue = 0u;
+        RtlZeroMemory((PVOID)&context->Header->Reserved[4], 60u);
+        RtlZeroMemory((PUCHAR)g_sharedSystemAddress + g_sharedRegionSize -
+                          AMGER_LOG_AREA_SIZE - AMGER_REPORT_AREA_SIZE,
+                      AMGER_REPORT_AREA_SIZE);
         MemoryBarrier();
     }
 
@@ -566,6 +572,31 @@ static NTSTATUS KickWorker(PVOID ContextParameter) {
             (PAMGER_RESULT_CONTROL)&context->Header->Reserved[0];
         MemoryBarrier();
         result->ResultValue = dispatch.ResultValue;
+        MemoryBarrier();
+    }
+
+    /* Publish the full parser report into the dedicated area ahead of the log
+     * tail. No string literal is emitted by the driver. */
+    {
+        PUCHAR reportArea = (PUCHAR)g_sharedSystemAddress + g_sharedRegionSize -
+                            AMGER_LOG_AREA_SIZE - AMGER_REPORT_AREA_SIZE;
+        AMGER_PARSER_REPORT report;
+
+        if (dispatch.ParserImageValid) {
+            PeBuildReport(&dispatch.ParserImage, &report);
+        } else {
+            RtlZeroMemory(&report, sizeof(report));
+            report.Signature = AMGER_PARSER_REPORT_SIGNATURE;
+            report.ParseStatus = dispatch.ParserStatus;
+        }
+        if (dispatch.AllocReport.Flags != 0u || dispatch.AllocReport.Status != 0u) {
+            report.Allocation = dispatch.AllocReport;
+        }
+        if (dispatch.MapReport.Flags != 0u || dispatch.MapReport.Status != 0u) {
+            report.Mapping = dispatch.MapReport;
+        }
+        MemoryBarrier();
+        RtlCopyMemory(reportArea, &report, sizeof(report));
         MemoryBarrier();
     }
 

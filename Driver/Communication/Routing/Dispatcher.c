@@ -1,11 +1,13 @@
 #include "Dispatcher.h"
 #include "../../Execution/Injector.h"
+#include "../../Utilities/Parser/Format.h"
 
 /* INJECT consumes the full payload contract: a real target, a bounded payload
  * at the fixed offset, only known option bits, and synchronous completion.
  * The bridge has already bounds-checked the range inside the registered MDL;
- * this layer validates the command-level semantics. The mapping engine itself
- * is linked in a later build, so a valid request reports NOT_IMPLEMENTED. */
+ * this layer validates the command-level semantics. Phases 1 and 2 are linked;
+ * later phases are deferred, so a valid request reports NOT_IMPLEMENTED after
+ * the image has been mapped. */
 
 static NTSTATUS ValidateInjectRequest(const AMGER_DISPATCH_CONTEXT* Context) {
     const AMGER_COMMAND_SNAPSHOT* snapshot = Context->Snapshot;
@@ -26,76 +28,6 @@ static NTSTATUS ValidateInjectRequest(const AMGER_DISPATCH_CONTEXT* Context) {
     return STATUS_SUCCESS;
 }
 
-/* Kernel headers do not expose the user-mode IMAGE_* types, so the PE fields
- * are read byte-wise. Alignment is irrelevant and a malformed image cannot
- * fault the guarded worker. */
-
-static uint32_t ReadLe32(const PUCHAR bytes) {
-    return (uint32_t)bytes[0] |
-           ((uint32_t)bytes[1] << 8) |
-           ((uint32_t)bytes[2] << 16) |
-           ((uint32_t)bytes[3] << 24);
-}
-
-static uint16_t ReadLe16(const PUCHAR bytes) {
-    return (uint16_t)((uint16_t)bytes[0] | ((uint16_t)bytes[1] << 8));
-}
-
-/* Offsets: DOS e_magic 0, e_lfanew 0x3C; PE signature 0, FileHeader at 4
- * (Machine 0, Sections 2), OptionalHeader at 24 (Magic 0, SizeOfImage 56,
- * SizeOfHeaders 60). */
-#define AMGER_PE_MINIMUM_SIZE 88u
-
-static NTSTATUS ValidatePeImage(const AMGER_DISPATCH_CONTEXT* Context) {
-    const PUCHAR image = (const PUCHAR)Context->PayloadSystemAddress;
-    uint32_t peOffset;
-    PUCHAR nt;
-
-    if (Context->PayloadSize < AMGER_PE_MINIMUM_SIZE ||
-        ReadLe16(image) != 0x5A4Du) { /* MZ */
-        return STATUS_INVALID_PARAMETER;
-    }
-
-    peOffset = ReadLe32(image + 0x3Cu);
-    if (peOffset == 0u || peOffset > Context->PayloadSize - AMGER_PE_MINIMUM_SIZE) {
-        return STATUS_INVALID_PARAMETER;
-    }
-
-    nt = image + peOffset;
-    if (ReadLe32(nt) != 0x00004550u ||       /* PE\0\0 */
-        ReadLe16(nt + 4u) != 0x8664u ||      /* IMAGE_FILE_MACHINE_AMD64 */
-        ReadLe16(nt + 24u) != 0x020Bu ||     /* PE32+ */
-        ReadLe16(nt + 6u) == 0u ||
-        ReadLe16(nt + 6u) > 96u) {
-        return STATUS_INVALID_PARAMETER;
-    }
-
-    {
-        const uint32_t sizeOfImage = ReadLe32(nt + 24u + 56u);
-        const uint32_t sizeOfHeaders = ReadLe32(nt + 24u + 60u);
-
-        if (sizeOfHeaders < AMGER_PE_MINIMUM_SIZE ||
-            sizeOfHeaders > Context->PayloadSize ||
-            sizeOfImage < sizeOfHeaders ||
-            sizeOfImage > (512u * 1024u * 1024u)) {
-            return STATUS_INVALID_PARAMETER;
-        }
-
-        /* The section table must fit inside the declared headers. */
-
-        {
-            const uint16_t optionalSize = ReadLe16(nt + 20u);
-            const uint64_t sectionEnd = (uint64_t)peOffset + 24u + optionalSize +
-                                        (uint64_t)ReadLe16(nt + 6u) * 40u;
-            if (optionalSize < 112u || sectionEnd > sizeOfHeaders) {
-                return STATUS_INVALID_PARAMETER;
-            }
-        }
-    }
-
-    return STATUS_SUCCESS;
-}
-
 NTSTATUS DispatcherDispatch(
     AMGER_DISPATCH_CONTEXT* Context,
     uint32_t* OutStatus) {
@@ -110,6 +42,10 @@ NTSTATUS DispatcherDispatch(
         status = STATUS_INVALID_PARAMETER;
     } else {
         snapshot = Context->Snapshot;
+        Context->ParserImageValid = FALSE;
+        Context->ParserStatus = 0u;
+        RtlZeroMemory(&Context->AllocReport, sizeof(Context->AllocReport));
+        RtlZeroMemory(&Context->MapReport, sizeof(Context->MapReport));
         Context->StageId = (uint16_t)AMGER_LOG_ID_HEADER_VALIDATE;
 
         if (snapshot->Magic != Context->Magic ||
@@ -135,19 +71,32 @@ NTSTATUS DispatcherDispatch(
                 break;
             case AMGER_COMMAND_INJECT: {
                 AMGER_INJECT_CONTEXT inject;
+                AMGER_PE_IMAGE image;
                 uint64_t remoteBase = 0u;
+
+                RtlZeroMemory(&inject, sizeof(inject));
 
                 Context->StageId = (uint16_t)AMGER_LOG_ID_INJECT;
                 status = ValidateInjectRequest(Context);
                 if (NT_SUCCESS(status)) {
                     Context->StageId = (uint16_t)AMGER_LOG_ID_PAYLOAD_IMAGE;
-                    status = ValidatePeImage(Context);
+                    status = PeParseAndValidate(Context->PayloadSystemAddress,
+                                                Context->PayloadSize,
+                                                &image);
+                    Context->ParserStatus = (uint32_t)status;
+                    if (NT_SUCCESS(status)) {
+                        Context->ParserImage = image;
+                        Context->ParserImageValid = TRUE;
+                    }
                 }
                 if (NT_SUCCESS(status)) {
                     inject.TargetProcessId = snapshot->TargetProcessId;
                     inject.Options = snapshot->Options;
                     inject.ImageBase = Context->PayloadSystemAddress;
                     inject.ImageSize = Context->PayloadSize;
+                    inject.Image = &image;
+                    inject.AllocReport = &Context->AllocReport;
+                    inject.MapReport = &Context->MapReport;
                     Context->StageId = (uint16_t)AMGER_LOG_ID_INJECT;
                     status = InjectorExecute(&inject, &remoteBase);
                     if (NT_SUCCESS(status)) {

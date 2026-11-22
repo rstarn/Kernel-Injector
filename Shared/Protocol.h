@@ -87,6 +87,89 @@ typedef struct _AMGER_RESULT_CONTROL {
     uint8_t Remainder[48];
 } AMGER_RESULT_CONTROL, * PAMGER_RESULT_CONTROL;
 
+/* Parser report lives in a dedicated area ahead of the log tail. The driver
+ * fills it from the parsed descriptor; the client renders it as text. No
+ * string literal is emitted by the driver. */
+#define AMGER_PARSER_REPORT_SIGNATURE 0x50415253u
+#define AMGER_REPORT_AREA_SIZE        2048u
+#define AMGER_REPORT_MAX_MODULES      16u
+#define AMGER_REPORT_NAME_LENGTH      32u
+
+#define AMGER_REPORT_FLAG_LOAD_CONFIG   0x00000001u
+#define AMGER_REPORT_FLAG_TLS           0x00000002u
+#define AMGER_REPORT_FLAG_DEBUG         0x00000004u
+#define AMGER_REPORT_FLAG_RESOURCE      0x00000008u
+#define AMGER_REPORT_FLAG_RELOCATIONS   0x00000010u
+#define AMGER_REPORT_FLAG_EXCEPTIONS    0x00000020u
+#define AMGER_REPORT_FLAG_BOUND_IMPORTS 0x00000040u
+#define AMGER_REPORT_FLAG_IAT           0x00000080u
+#define AMGER_REPORT_FLAG_MANIFEST      0x00000100u
+#define AMGER_REPORT_FLAG_CFG           0x00000200u
+#define AMGER_REPORT_FLAG_CET_COMPAT    0x00000400u
+#define AMGER_REPORT_FLAG_CET           0x00000800u
+
+#define AMGER_ALLOC_FLAG_RESERVED   0x00000001u
+#define AMGER_ALLOC_FLAG_RELEASED   0x00000002u
+
+typedef struct _AMGER_ALLOC_REPORT {
+    uint32_t Status;
+    uint32_t TargetProcessId;
+    uint32_t ImageSize;
+    uint32_t Flags;
+    uint64_t RemoteBase;
+} AMGER_ALLOC_REPORT, * PAMGER_ALLOC_REPORT;
+
+#define AMGER_MAP_FLAG_COMMITTED   0x00000001u
+#define AMGER_MAP_FLAG_COPIED      0x00000002u
+#define AMGER_MAP_FLAG_PROTECTED   0x00000004u
+#define AMGER_MAP_FLAG_REVERTED    0x00000008u
+
+typedef struct _AMGER_MAP_REPORT {
+    uint32_t Status;
+    uint32_t ImageSize;
+    uint32_t BytesCopied;
+    uint32_t ZeroFilled;
+    uint32_t HeaderBytes;
+    uint32_t PageGroups;
+    uint32_t Flags;
+    uint16_t SectionCount;
+    uint16_t Reserved;
+    uint64_t RemoteBase;
+} AMGER_MAP_REPORT, * PAMGER_MAP_REPORT;
+
+typedef struct _AMGER_PARSER_REPORT {
+    uint32_t Signature;
+    uint32_t ParseStatus;
+    uint16_t SectionCount;
+    uint16_t DirectoryCount;
+    uint32_t EntryPoint;
+    uint32_t SizeOfImage;
+    uint32_t SizeOfHeaders;
+    uint64_t ImageBase;
+    uint32_t PeOffset;
+    uint32_t SectionAlignment;
+    uint32_t FileAlignment;
+    uint16_t Subsystem;
+    uint16_t DllCharacteristics;
+    uint16_t FileCharacteristics;
+    uint32_t SecurityCookieRva;
+    uint32_t GuardFlags;
+    uint32_t RelocDir64Count;
+    uint32_t RelocHighLowCount;
+    uint32_t ImportModuleCount;
+    uint32_t DelayImportCount;
+    uint32_t ExportCount;
+    uint32_t ForwardedCount;
+    uint32_t TlsCallbackCount;
+    uint32_t ApiSetCount;
+    uint32_t OrdinalImportCount;
+    uint32_t Flags;
+    AMGER_ALLOC_REPORT Allocation;
+    AMGER_MAP_REPORT Mapping;
+    char ImportNames[AMGER_REPORT_MAX_MODULES][AMGER_REPORT_NAME_LENGTH];
+    char ExportNames[AMGER_REPORT_MAX_MODULES][AMGER_REPORT_NAME_LENGTH];
+} AMGER_PARSER_REPORT, * PAMGER_PARSER_REPORT;
+
 /* Reserved[0..3] is the seqlock. The log ring lives in a dedicated tail area
  * at the end of the registered region, so it cannot be overwritten by payload
  * bytes and holds enough records for several commands at once. */
@@ -137,11 +220,12 @@ typedef struct _AMGER_RESULT_CONTROL {
 #define AMGER_COMMAND_HEADER_SIZE 128u
 #define AMGER_SHARED_REGION_SIZE (AMGER_COMMAND_HEADER_SIZE + AMGER_MAXIMUM_PAYLOAD_SIZE)
 
-/* Region size used by the currently implemented PING-only commands. */
+/* Baseline region size for commands that carry no payload. */
 #define AMGER_COMMAND_REGION_SIZE AMGER_COMMAND_HEADER_SIZE
 
 /* Every registered region carries the command header and the log tail. */
-#define AMGER_MINIMUM_REGION_SIZE (AMGER_COMMAND_HEADER_SIZE + AMGER_LOG_AREA_SIZE)
+#define AMGER_MINIMUM_REGION_SIZE \
+    (AMGER_COMMAND_HEADER_SIZE + AMGER_REPORT_AREA_SIZE + AMGER_LOG_AREA_SIZE)
 
 /* Seqlock fields inside AMGER_COMMAND_HEADER.Reserved. */
 #define AMGER_SEQUENCE_OFFSET 48u
@@ -330,6 +414,10 @@ AMGER_STATIC_ASSERT(sizeof(AMGER_HEADER_CONTROL) == 64,
                     "AMGER_HEADER_CONTROL must cover Reserved exactly");
 AMGER_STATIC_ASSERT(sizeof(AMGER_RESULT_CONTROL) == 64,
                     "AMGER_RESULT_CONTROL must cover Reserved exactly");
+AMGER_STATIC_ASSERT(sizeof(AMGER_PARSER_REPORT) <= AMGER_REPORT_AREA_SIZE,
+                    "parser report must fit the report area");
+AMGER_STATIC_ASSERT(offsetof(AMGER_PARSER_REPORT, Signature) == 0u,
+                    "parser report signature offset mismatch");
 AMGER_STATIC_ASSERT(sizeof(AMGER_SHARED_REGION_REQUEST) == 16,
                     "AMGER_SHARED_REGION_REQUEST must be 16 bytes");
 AMGER_STATIC_ASSERT(sizeof(AMGER_LOG_ENTRY) == 16,

@@ -39,7 +39,7 @@ NTSTATUS GuardExecute(
         const BOOLEAN wasProbe = (BOOLEAN)(ExpectProbeFault && isAv);
 
         DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_WARNING_LEVEL,
-                   "[Ameger] GuardExecute: worker=%p code=0x%08X class=%s\n",
+                   "guard worker=%p code=0x%08X class=%s\n",
                    (PVOID)Worker, exceptionCode,
                    wasProbe ? "expected-probe-fault" : "UNEXPECTED-kernel-fault");
 

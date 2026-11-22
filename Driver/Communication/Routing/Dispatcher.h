@@ -2,12 +2,13 @@
 #define AMGER_DISPATCHER_H
 
 /*
- * Dispatcher.h - Phase 1 command execution over a captured snapshot.
+ * Dispatcher.h - command execution over a captured snapshot.
  *
  * Contract: interprets one kernel-local command snapshot plus the validated
  * system mapping of its payload, and returns its NTSTATUS through OutStatus.
- * PING and STATUS are implemented. INJECT validates the full request and reports
- * that the mapping engine is not yet linked; EJECT remains unimplemented.
+ * PING and STATUS are implemented. INJECT validates, parses, reserves and maps
+ * the image, then reports NOT_IMPLEMENTED while later phases are deferred;
+ * EJECT remains unimplemented.
  * Inputs: dispatch context (snapshot + payload mapping) and output status.
  * Outputs: NTSTATUS mirrored in *OutStatus on every path.
  * Failure modes: null arguments produce STATUS_INVALID_PARAMETER without
@@ -17,6 +18,7 @@
 #include <wdm.h>
 
 #include "../../../Shared/Protocol.h"
+#include "../../Utilities/Parser/Format.h"
 
 /*
  * AMGER_DISPATCH_CONTEXT - snapshot plus the payload bytes it describes.
@@ -38,6 +40,13 @@ typedef struct _AMGER_DISPATCH_CONTEXT {
 
     uint32_t LastFailure;
     uint64_t ResultValue;
+
+    /* Phase 0 output, published to the client through the report area. */
+    AMGER_PE_IMAGE ParserImage;
+    BOOLEAN ParserImageValid;
+    uint32_t ParserStatus;
+    AMGER_ALLOC_REPORT AllocReport;
+    AMGER_MAP_REPORT MapReport;
 } AMGER_DISPATCH_CONTEXT, * PAMGER_DISPATCH_CONTEXT;
 
 /*

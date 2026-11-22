@@ -10,17 +10,21 @@
  * implementation can assume a well-formed x64 image and a live target PID.
  * Inputs: process id, option bits, kernel image base and image size.
  * Outputs: NTSTATUS and the remote base address in OutRemoteBase.
- * Failure modes: STATUS_NOT_IMPLEMENTED until the mapping engine is linked.
+ * Failure modes: STATUS_NOT_IMPLEMENTED while phases 3-8 are deferred.
  */
 
 #include <wdm.h>
 #include "../../Shared/Protocol.h"
+#include "../Utilities/Parser/Format.h"
 
 typedef struct _AMGER_INJECT_CONTEXT {
     uint32_t TargetProcessId;
     uint32_t Options;
     PVOID ImageBase;
     SIZE_T ImageSize;
+    const AMGER_PE_IMAGE* Image;
+    PAMGER_ALLOC_REPORT AllocReport;
+    PAMGER_MAP_REPORT MapReport;
 } AMGER_INJECT_CONTEXT, * PAMGER_INJECT_CONTEXT;
 
 NTSTATUS InjectorExecute(

@@ -277,12 +277,13 @@ uint32_t ChannelClient::Inject(uint32_t targetProcessId,
     resultValue = 0u;
 
     if (payload == nullptr || payloadSize == 0u ||
-        payloadSize > static_cast<size_t>(AMGER_MAXIMUM_PAYLOAD_SIZE) - AMGER_LOG_AREA_SIZE) {
+        payloadSize > static_cast<size_t>(AMGER_MAXIMUM_PAYLOAD_SIZE) -
+                          AMGER_LOG_AREA_SIZE - AMGER_REPORT_AREA_SIZE) {
         return AMGER_CLIENT_BAD_ARGUMENTS;
     }
 
     const size_t needed = static_cast<size_t>(AMGER_PAYLOAD_OFFSET) + payloadSize +
-                          AMGER_LOG_AREA_SIZE;
+                          AMGER_REPORT_AREA_SIZE + AMGER_LOG_AREA_SIZE;
     if (needed > AMGER_SHARED_REGION_SIZE || !EnsureRegionUnlocked(needed)) {
         return AMGER_CLIENT_REGION_FAILED;
     }
@@ -327,6 +328,19 @@ uint32_t ChannelClient::Inject(uint32_t targetProcessId,
 uint64_t ChannelClient::ResultValue() const {
     std::lock_guard<std::mutex> lock(operationMutex);
     return resultValue;
+}
+
+bool ChannelClient::ParserReport(AMGER_PARSER_REPORT& out) const {
+    std::lock_guard<std::mutex> lock(operationMutex);
+    if (header == nullptr || sharedRegion == nullptr ||
+        regionSize < AMGER_MINIMUM_REGION_SIZE) {
+        return false;
+    }
+
+    const PUCHAR reportArea = reinterpret_cast<PUCHAR>(sharedRegion) + regionSize -
+                              AMGER_LOG_AREA_SIZE - AMGER_REPORT_AREA_SIZE;
+    std::memcpy(&out, reportArea, sizeof(out));
+    return out.Signature == AMGER_PARSER_REPORT_SIGNATURE;
 }
 
 const std::wstring& ChannelClient::DevicePath() const {

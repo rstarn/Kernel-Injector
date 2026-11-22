@@ -43,7 +43,8 @@ public:
     ChannelClient();
     ~ChannelClient();
 
-    bool Connect(size_t regionSize = AMGER_COMMAND_REGION_SIZE + AMGER_LOG_AREA_SIZE);
+    bool Connect(size_t regionSize = AMGER_COMMAND_REGION_SIZE +
+                                    AMGER_REPORT_AREA_SIZE + AMGER_LOG_AREA_SIZE);
     bool Connected() const;
 
     /* Genuine object-manager probe: opens the derived device path with no
@@ -66,6 +67,11 @@ public:
     void Disconnect();
 
     uint64_t ResultValue() const;
+
+    /* Copies the parser report published by the driver for the last INJECT.
+     * Returns false when no valid report is present. */
+
+    bool ParserReport(AMGER_PARSER_REPORT& out) const;
     const std::wstring& DevicePath() const;
 
     /* Returns dispatcher records newer than the last ones displayed. */

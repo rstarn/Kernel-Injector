@@ -2,7 +2,7 @@
 setlocal enabledelayedexpansion
 
 rem ===========================================================================
-rem Ameger Phase 1 build driver.
+rem Ameger build driver.
 rem Usage: Create.bat [BUILD | CLEAN | REBUILD]
 rem This script is the single source of truth for compiler flags. The former
 rem compile_commands.json is intentionally absent: its per-target commands are
@@ -159,6 +159,12 @@ cl %AMGER_DRIVER_FLAGS% /c /Fo"%AMGER_OBJECTS%\Dispatcher.obj" "%AMGER_ROOT%\Dri
 if errorlevel 1 goto :Failed
 cl %AMGER_DRIVER_FLAGS% /c /Fo"%AMGER_OBJECTS%\Injector.obj" "%AMGER_ROOT%\Driver\Execution\Injector.c"
 if errorlevel 1 goto :Failed
+cl %AMGER_DRIVER_FLAGS% /c /Fo"%AMGER_OBJECTS%\Allocate.obj" "%AMGER_ROOT%\Driver\Execution\Reserve\Allocate.c"
+if errorlevel 1 goto :Failed
+cl %AMGER_DRIVER_FLAGS% /c /Fo"%AMGER_OBJECTS%\Sections.obj" "%AMGER_ROOT%\Driver\Execution\Mapping\Sections.c"
+if errorlevel 1 goto :Failed
+cl %AMGER_DRIVER_FLAGS% /c /Fo"%AMGER_OBJECTS%\Format.obj" "%AMGER_ROOT%\Driver\Utilities\Parser\Format.c"
+if errorlevel 1 goto :Failed
 cl %AMGER_DRIVER_FLAGS% /c /Fo"%AMGER_OBJECTS%\Guard.obj" "%AMGER_ROOT%\Driver\Utilities\Guard.c"
 if errorlevel 1 goto :Failed
 
@@ -172,9 +178,30 @@ link /nologo /driver /subsystem:native /machine:x64 /entry:GsDriverEntry /nodefa
     "%AMGER_OBJECTS%\Bridge.obj" ^
     "%AMGER_OBJECTS%\Dispatcher.obj" ^
     "%AMGER_OBJECTS%\Injector.obj" ^
+    "%AMGER_OBJECTS%\Allocate.obj" ^
+    "%AMGER_OBJECTS%\Sections.obj" ^
+    "%AMGER_OBJECTS%\Format.obj" ^
     "%AMGER_OBJECTS%\Guard.obj" ^
     /libpath:"%AMGER_KM_LIB%" ntoskrnl.lib hal.lib BufferOverflowK.lib
 if errorlevel 1 goto :Failed
+
+rem --- Verify the shipped binaries on every successful build ---------------
+rem Verify.bat exits 0 on all-pass and 1 on any failed check. It has its own
+rem setlocal, so call is required: a bare invocation would transfer control and
+rem never return to this script. CLEAN never reaches this point (it jumps to
+rem :Finish), so verification only runs on BUILD/REBUILD outputs that exist.
+if not exist "%AMGER_ROOT%\Build\Scripts\Verify.bat" (
+    echo [Ameger] ERROR: Verify.bat not found.
+    set "AMGER_EXIT=1"
+    goto :Finish
+)
+echo [Ameger] Verifying shipped binaries...
+call "%AMGER_ROOT%\Build\Scripts\Verify.bat"
+if errorlevel 1 (
+    echo [Ameger] ERROR: static verification failed.
+    set "AMGER_EXIT=1"
+    goto :Finish
+)
 
 echo [Ameger] Build complete.
 dir "%AMGER_OUTPUT%"
