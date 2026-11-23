@@ -10,25 +10,47 @@
 /*
  * Phase 1 reserves the image, Phase 2 copies it, Phase 3 applies relocations,
  * Phase 4 resolves imports, Phase 5 maps missing dependencies and rebinds,
- * then SectionsSeal promotes protections once. Phases 6 through 8 are still
+ * then SectionsSeal promotes protections once. Phase 8 (Execute) is still
  * deferred, so the image is reverted as R3 rollback before returning
- * NOT_IMPLEMENTED. Once the later phases land, that revert moves to the
- * failure path only.
+ * NOT_IMPLEMENTED. Once Execute lands, that revert moves to the failure path
+ * only.
  */
 
-static VOID ReleaseDependencyBases(HANDLE ProcessId,
-                                   const AMGER_DEP_REPORT* Report) {
-    uint32_t index;
+/* A timed-out user APC may still be queued in the target. Its stub calls into
+ * the mapped image, so the VAD must outlive it. Drain with a bounded wait; if
+ * an APC is still outstanding, skip the release rather than crash the target
+ * on a later delivery. */
 
-    if (Report == NULL) {
-        return;
+static NTSTATUS RevertImage(HANDLE ProcessId, uint64_t RemoteBase) {
+    LARGE_INTEGER interval;
+    uint32_t attempt;
+
+    interval.QuadPart = -10000LL; /* 1 ms */
+    for (attempt = 0u; attempt < 200u && InitializeApcOutstanding(); ++attempt) {
+        (void)KeDelayExecutionThread(KernelMode, FALSE, &interval);
+    }
+    if (InitializeApcOutstanding()) {
+        return STATUS_DEVICE_BUSY;
+    }
+    return MapSectionsRevert(ProcessId, RemoteBase);
+}
+
+static BOOLEAN ReleaseDependencyBases(HANDLE ProcessId,
+                                      const AMGER_DEP_REPORT* Report) {
+    uint32_t index;
+    BOOLEAN released = FALSE;
+
+    if (Report == NULL || InitializeApcOutstanding()) {
+        return FALSE;
     }
     for (index = 0u; index < Report->BaseCount &&
                       index < AMGER_DEP_REPORT_MAX_BASES; ++index) {
         if (Report->Bases[index] != 0u) {
             (void)MapSectionsRevert(ProcessId, Report->Bases[index]);
+            released = TRUE;
         }
     }
+    return released;
 }
 
 static VOID MarkReverted(const AMGER_INJECT_CONTEXT* Context,
@@ -36,6 +58,7 @@ static VOID MarkReverted(const AMGER_INJECT_CONTEXT* Context,
                          PAMGER_RELOC_REPORT RelocReport,
                          PAMGER_IMPORT_REPORT ImportReport,
                          PAMGER_DEP_REPORT DepReport,
+                         BOOLEAN DepsReleased,
                          NTSTATUS RevertStatus) {
     if (!NT_SUCCESS(RevertStatus)) {
         return;
@@ -54,7 +77,8 @@ static VOID MarkReverted(const AMGER_INJECT_CONTEXT* Context,
     if ((ImportReport->Flags & AMGER_IMPORT_FLAG_RESOLVED) != 0u) {
         ImportReport->Flags |= AMGER_IMPORT_FLAG_REVERTED;
     }
-    if ((DepReport->Flags & AMGER_DEP_FLAG_MAPPED) != 0u) {
+    if (DepsReleased &&
+        (DepReport->Flags & AMGER_DEP_FLAG_MAPPED) != 0u) {
         DepReport->Flags |= AMGER_DEP_FLAG_REVERTED;
     }
 }
@@ -67,16 +91,19 @@ NTSTATUS InjectorExecute(
     AMGER_IMPORT_REPORT localImport;
     AMGER_DEP_REPORT localDep;
     AMGER_INIT_REPORT localInit;
+    AMGER_ENTRY_REPORT localEntry;
     PAMGER_MAP_REPORT mapReport;
     PAMGER_RELOC_REPORT relocReport;
     PAMGER_IMPORT_REPORT importReport;
     PAMGER_DEP_REPORT depReport;
     PAMGER_INIT_REPORT initReport;
+    PAMGER_ENTRY_REPORT entryReport;
     AMGER_INIT_CONTEXT init;
     uint64_t remoteBase = 0u;
     uint64_t delta;
     NTSTATUS status;
     NTSTATUS revertStatus;
+    BOOLEAN depsReleased = FALSE;
     HANDLE processId;
 
     if (OutRemoteBase != NULL) {
@@ -91,16 +118,19 @@ NTSTATUS InjectorExecute(
     RtlZeroMemory(&localImport, sizeof(localImport));
     RtlZeroMemory(&localDep, sizeof(localDep));
     RtlZeroMemory(&localInit, sizeof(localInit));
+    RtlZeroMemory(&localEntry, sizeof(localEntry));
     mapReport = (Context->MapReport != NULL) ? Context->MapReport : &localMap;
     relocReport = (Context->RelocReport != NULL) ? Context->RelocReport : &localReloc;
     importReport = (Context->ImportReport != NULL) ? Context->ImportReport : &localImport;
     depReport = (Context->DepReport != NULL) ? Context->DepReport : &localDep;
     initReport = (Context->InitReport != NULL) ? Context->InitReport : &localInit;
+    entryReport = (Context->EntryReport != NULL) ? Context->EntryReport : &localEntry;
     RtlZeroMemory(mapReport, sizeof(*mapReport));
     RtlZeroMemory(relocReport, sizeof(*relocReport));
     RtlZeroMemory(importReport, sizeof(*importReport));
     RtlZeroMemory(depReport, sizeof(*depReport));
     RtlZeroMemory(initReport, sizeof(*initReport));
+    RtlZeroMemory(entryReport, sizeof(*entryReport));
     RtlZeroMemory(&init, sizeof(init));
 
     if (Context->AllocReport != NULL) {
@@ -144,8 +174,9 @@ NTSTATUS InjectorExecute(
 
     status = MapSectionsMap(Context->Image, processId, remoteBase, mapReport);
     if (!NT_SUCCESS(status)) {
-        revertStatus = MapSectionsRevert(processId, remoteBase);
-        MarkReverted(Context, mapReport, relocReport, importReport, depReport, revertStatus);
+        revertStatus = RevertImage(processId, remoteBase);
+        MarkReverted(Context, mapReport, relocReport, importReport, depReport,
+                     depsReleased, revertStatus);
         return status;
     }
 
@@ -153,8 +184,9 @@ NTSTATUS InjectorExecute(
     status = FixupsApply(Context->Image, processId, remoteBase, delta,
                          relocReport);
     if (!NT_SUCCESS(status)) {
-        revertStatus = MapSectionsRevert(processId, remoteBase);
-        MarkReverted(Context, mapReport, relocReport, importReport, depReport, revertStatus);
+        revertStatus = RevertImage(processId, remoteBase);
+        MarkReverted(Context, mapReport, relocReport, importReport, depReport,
+                     depsReleased, revertStatus);
         return status;
     }
 
@@ -165,17 +197,19 @@ NTSTATUS InjectorExecute(
     status = ResolveImports(Context->Image, processId, remoteBase,
                             importReport);
     if (!NT_SUCCESS(status)) {
-        revertStatus = MapSectionsRevert(processId, remoteBase);
-        MarkReverted(Context, mapReport, relocReport, importReport, depReport, revertStatus);
+        revertStatus = RevertImage(processId, remoteBase);
+        MarkReverted(Context, mapReport, relocReport, importReport, depReport,
+                     depsReleased, revertStatus);
         return status;
     }
 
     status = DependenciesResolve(Context->Image, processId, remoteBase,
                                  importReport, depReport);
     if (!NT_SUCCESS(status)) {
-        ReleaseDependencyBases(processId, depReport);
-        revertStatus = MapSectionsRevert(processId, remoteBase);
-        MarkReverted(Context, mapReport, relocReport, importReport, depReport, revertStatus);
+        depsReleased = ReleaseDependencyBases(processId, depReport);
+        revertStatus = RevertImage(processId, remoteBase);
+        MarkReverted(Context, mapReport, relocReport, importReport, depReport,
+                     depsReleased, revertStatus);
         return status;
     }
 
@@ -186,30 +220,50 @@ NTSTATUS InjectorExecute(
         init.Report = initReport;
         status = InitializePhase(&init);
         if (!NT_SUCCESS(status)) {
-            ReleaseDependencyBases(processId, depReport);
-            revertStatus = MapSectionsRevert(processId, remoteBase);
-            MarkReverted(Context, mapReport, relocReport, importReport, depReport, revertStatus);
+            depsReleased = ReleaseDependencyBases(processId, depReport);
+            revertStatus = RevertImage(processId, remoteBase);
+            MarkReverted(Context, mapReport, relocReport, importReport, depReport,
+                         depsReleased, revertStatus);
             return status;
         }
+    }
+
+    /* Phase 7 resolves the selected entry, runs the image's CRT entry once and
+     * erases the mapped PE headers while they are still writable. It must run
+     * before SectionsSeal makes the header pages read-only. */
+
+    status = InvokeEntryPhase(&init, &Context->EntrySelection, entryReport);
+    if (!NT_SUCCESS(status)) {
+        InitializeRevert(&init);
+        depsReleased = ReleaseDependencyBases(processId, depReport);
+        revertStatus = RevertImage(processId, remoteBase);
+        if (NT_SUCCESS(revertStatus)) {
+            entryReport->Flags |= AMGER_ENTRY_FLAG_REVERTED;
+        }
+        MarkReverted(Context, mapReport, relocReport, importReport, depReport,
+                     depsReleased, revertStatus);
+        return status;
     }
 
     status = SectionsSeal(Context->Image, processId, remoteBase, mapReport);
     if (!NT_SUCCESS(status)) {
         InitializeRevert(&init);
-        ReleaseDependencyBases(processId, depReport);
-        revertStatus = MapSectionsRevert(processId, remoteBase);
-        MarkReverted(Context, mapReport, relocReport, importReport, depReport, revertStatus);
+        depsReleased = ReleaseDependencyBases(processId, depReport);
+        revertStatus = RevertImage(processId, remoteBase);
+        MarkReverted(Context, mapReport, relocReport, importReport, depReport,
+                     depsReleased, revertStatus);
         return status;
     }
 
-    /* Phases 7 and 8 are still deferred, so this inject is reverted as an R3
+    /* Phase 8 (Execute) is still deferred, so this inject is reverted as an R3
      * rollback. InitializeRevert restores ntdll and releases the private APC
-     * pages before the mapping is unmapped. Once Entry and Execute land, the
-     * revert moves to the failure path only. */
+     * pages before the mapping is unmapped. Once Execute lands, the revert
+     * moves to the failure path only. */
 
     InitializeRevert(&init);
-    ReleaseDependencyBases(processId, depReport);
-    revertStatus = MapSectionsRevert(processId, remoteBase);
-    MarkReverted(Context, mapReport, relocReport, importReport, depReport, revertStatus);
+    depsReleased = ReleaseDependencyBases(processId, depReport);
+    revertStatus = RevertImage(processId, remoteBase);
+    MarkReverted(Context, mapReport, relocReport, importReport, depReport,
+                 depsReleased, revertStatus);
     return STATUS_NOT_IMPLEMENTED;
 }

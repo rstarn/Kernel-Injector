@@ -7,9 +7,10 @@
  * Contract: interprets one kernel-local command snapshot plus the validated
  * system mapping of its payload, and returns its NTSTATUS through OutStatus.
  * PING and STATUS are implemented. INJECT validates, parses, reserves, maps,
- * relocates, resolves imports, binds dependencies, runs phase 6 Initialize
- * (then rolls it back) and seals the image; phases 0-6 are implemented and
- * phases 7-8 remain deferred, so a valid inject still reports NOT_IMPLEMENTED.
+ * relocates, resolves imports, binds dependencies, runs phase 6 Initialize,
+ * resolves the entry, calls the CRT entry and erases the PE headers in phase 7,
+ * then seals the image; phases 0-7 are implemented and only phase 8 (Execute)
+ * remains deferred, so a valid inject still reports NOT_IMPLEMENTED.
  * EJECT remains unimplemented.
  * Inputs: dispatch context (snapshot + payload mapping) and output status.
  * Outputs: NTSTATUS mirrored in *OutStatus on every path.
@@ -21,6 +22,7 @@
 
 #include "../../../Shared/Protocol.h"
 #include "../../Utilities/Parser/Format.h"
+#include "../../Execution/Initialize/Runtime.h"
 
 /*
  * AMGER_DISPATCH_CONTEXT - snapshot plus the payload bytes it describes.
@@ -54,6 +56,7 @@ typedef struct _AMGER_DISPATCH_CONTEXT {
     AMGER_IMPORT_REPORT ImportReport;
     AMGER_DEP_REPORT DepReport;
     AMGER_INIT_REPORT InitReport;
+    AMGER_ENTRY_REPORT EntryReport;
 } AMGER_DISPATCH_CONTEXT, * PAMGER_DISPATCH_CONTEXT;
 
 /*

@@ -45,6 +45,7 @@ static constexpr std::array<wchar_t, 14> kL30 = { 0x5A6C, 0x5A7C, 0x5A67, 0x5A73
 static constexpr std::array<wchar_t, 15> kL31 = { 0x5A75, 0x5A73, 0x5A74, 0x5A7A, 0x5A03, 0x5A15, 0x5A1D, 0x5A13, 0x5A16, 0x5A0A, 0x5A05, 0x5A02, 0x5A1B, 0x5A1A, 0x5A4A };
 static constexpr std::array<wchar_t, 15> kL32 = { 0x5A75, 0x5A73, 0x5A74, 0x5A7A, 0x5A03, 0x5A15, 0x5A1D, 0x5A0E, 0x5A05, 0x5A15, 0x5A16, 0x5A0E, 0x5A06, 0x5A0E, 0x5A4A };
 static constexpr std::array<wchar_t, 14> kL33 = { 0x5A75, 0x5A73, 0x5A74, 0x5A7A, 0x5A03, 0x5A15, 0x5A1D, 0x5A17, 0x5A0C, 0x5A17, 0x5A03, 0x5A06, 0x5A0C, 0x5A49 };
+static constexpr std::array<wchar_t, 6> kL34 = { 0x5A79, 0x5A73, 0x5A6A, 0x5A6D, 0x5A19, 0x5A41 };
 
 template <std::size_t N>
 inline void Decode(const std::array<wchar_t, N>& a, wchar_t* destination) {
@@ -96,6 +97,7 @@ inline const wchar_t* LabelLog(uint16_t id) {
     case AMGER_LOG_ID_INJECT_PROCESS: { static wchar_t b[15]; Labels::Decode(Labels::kL31, b); return b; }
     case AMGER_LOG_ID_INJECT_MAPPING: { static wchar_t b[15]; Labels::Decode(Labels::kL32, b); return b; }
     case AMGER_LOG_ID_INJECT_THREAD: { static wchar_t b[14]; Labels::Decode(Labels::kL33, b); return b; }
+    case AMGER_LOG_ID_ENTRY: { static wchar_t b[6]; Labels::Decode(Labels::kL34, b); return b; }
     default: break;
   }
   return nullptr;

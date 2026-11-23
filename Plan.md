@@ -45,7 +45,7 @@ Execution: Thread Hijacking
 
 ## Parser
 
-Implemented in `Driver/Utilities/Parser/Format.h` and `Format.c`. Phase 0 (R21, R16) is complete and wired into `Dispatcher.c`. Phases 1 through 6 are implemented in `Reserve/`, `Mapping/`, `Relocate/`, `Imports/`, `Dependencies/` and `Initialize/`; `InjectorExecute` orchestrates them but returns `STATUS_NOT_IMPLEMENTED` while phases 7–8 are deferred.
+Implemented in `Driver/Utilities/Parser/Format.h` and `Format.c`. Phase 0 (R21, R16) is complete and wired into `Dispatcher.c`. Phases 1 through 7 are implemented in `Reserve/`, `Mapping/`, `Relocate/`, `Imports/`, `Dependencies/` and `Initialize/` (which hosts both Phase 6 Initialize and Phase 7 Entry); `InjectorExecute` orchestrates them but returns `STATUS_NOT_IMPLEMENTED` while phase 8 (Execute) is deferred.
 
 API:
 - `PeParseAndValidate(Image, ImageSize, Out)` — returns STATUS_SUCCESS or STATUS_INVALID_PARAMETER; the descriptor is zeroed on entry.
@@ -110,10 +110,10 @@ Allocation:
   Remote Base: 0x0000020000000000
   Protection: READWRITE (reserve only)
 
-  Execution: deferred (phases 6-8)
+  Execution: deferred (phase 8)
 ```
 
-Verification order: test on `notepad` first with the client console. Until Phases 6–8 land, INJECT must still return `STATUS_NOT_IMPLEMENTED` — a successful allocation must not claim injection succeeded. Overwatch is tested only after the entire injector is finished.
+Verification order: test on `notepad` first with the client console. Until Phase 8 (Execute) lands, INJECT must still return `STATUS_NOT_IMPLEMENTED` — a successful allocation must not claim injection succeeded. Overwatch is tested only after the entire injector is finished.
 
 ## Mapping
 
@@ -266,11 +266,25 @@ All COW-sensitive writes use one `ZwProtectVirtualMemory(PAGE_READWRITE)` -> `Mm
 
 R6 (activation context) is implemented as measured non-applicability. `DetectActivation` walks the resource tree for `RT_MANIFEST` (id 24) and reports the manifest ID, byte count and a content hash. No activation context is created: the loader's ID-1/ID-2 actctx is produced only inside `LoadLibrary` and stored in a loader data entry, a manually mapped image has neither, there is no documented in-memory-XML actctx API, and Phase 4 resolves imports directly without SxS binding. Activation is thread-local, so an APC-time activation would not apply to the entry-point thread. No target state is changed by R6.
 
-R25 (thread TLS callbacks) is implemented with a deliberately tiny `PsSetCreateThreadNotifyRoutine` callback that only enqueues an event into a bounded ring and arms a passive-level work item. All user-memory access, TLS-slot installation and user-APC queuing happen in that work item, removing the deep chain and large stack frames that caused the earlier `0x7f` bugcheck. `DLL_THREAD_ATTACH` is delivered on the new thread after loader thread-init; delete events are counted only, never reported as callbacks fired, because an exiting thread never returns to user mode and no user APC can deliver `DLL_THREAD_DETACH` to it. Each attach uses a private RW job page and a separate code page promoted to RX before the APC is queued. The notify registration and all per-thread pages are released by `InitializeRevert`; with phases 7–8 deferred the payload is rolled back in the same inject, so the report measures registration and event counts but normally sees zero create events.
+R25 (thread TLS callbacks) is implemented with a deliberately tiny `PsSetCreateThreadNotifyRoutine` callback that only enqueues an event into a bounded ring and arms a passive-level work item. All user-memory access, TLS-slot installation and user-APC queuing happen in that work item, removing the deep chain and large stack frames that caused the earlier `0x7f` bugcheck. `DLL_THREAD_ATTACH` is delivered on the new thread after loader thread-init; delete events are counted only, never reported as callbacks fired, because an exiting thread never returns to user mode and no user APC can deliver `DLL_THREAD_DETACH` to it. Each attach uses a private RW job page and a separate code page promoted to RX before the APC is queued. The notify registration and all per-thread pages are released by `InitializeRevert`; with phase 8 deferred the payload is rolled back in the same inject, so the report measures registration and event counts but normally sees zero create events.
 
 Report fields (`AMGER_INIT_REPORT`) are all read back from the target or taken from calls that returned a status: load-config RVA/size/struct size/GuardFlags, cookie RVA and low half, activation-context status plus manifest state/id/bytes/hash, TLS callback count, index and bitmap size/buffer/bits, raw byte count, patched-thread count, notify status and create/delete/dropped/attach/detach counters, routine counts, APC runs/failures/started/completion/boosters, detour address and byte count, `.pdata` table/entry counts, CFG pointer before/after, and failure stage. `BuildId` is retained in the report for stale-driver diagnosis but is not displayed by the client.
 
-Verification order: test on `notepad` first. The `Initialization:` block is the proof; INJECT must still return `STATUS_NOT_IMPLEMENTED` because phases 7–8 are deferred. Overwatch is tested only after the entire injector is finished.
+Verification order: test on `notepad` first. The `Initialization:` block is the proof; INJECT must still return `STATUS_NOT_IMPLEMENTED` because phase 8 (Execute) is deferred. Overwatch is tested only after the entire injector is finished.
+
+## Entry
+
+Phase 7 (R13, R30, R20) is implemented in `Driver/Execution/Initialize/Runtime.c` as `InvokeEntryPhase`, reusing the phase-6 user-APC machinery. Static asserts in `Protocol.h` keep the wire layout fixed across the client and driver.
+
+Selection (R13) arrives in `AMGER_COMMAND_HEADER.Reserved[16..63]` as an `AMGER_ENTRY_CONTROL` and is copied under the seqlock into the kernel-local snapshot. Three kinds are supported: the image's `AddressOfEntryPoint` (the CRT startup for an MSVC DLL), a named export, and an ordinal-only export. Export lookup reuses `LookupGetExport` on the mapped base and rejects forwarders; resolution happens **before** any header write because the export directory is located through the PE optional header.
+
+R30 calls the resolved entry **once** through a dedicated user APC whose stub lives in a private RX page and whose single job block lives in a separate RW page. The call uses the documented x64 three-argument form (`rcx = RemoteBase`, `rdx = 1 /* DLL_PROCESS_ATTACH */`, `r8 = NULL`) with 32 bytes of shadow space and 16-byte stack alignment; the 64-bit RAX result is read back after the completion marker and only its low 32 bits are published as `EntryResult` (the defined width for a `BOOL` return). A zero return is a **measured payload result**, not an engine failure: many manual-map payloads have `DllMain` refuse process attach so a normal `LoadLibrary` fails, with the real work in an exported entry such as `ManualEntry`. The driver records `AMGER_ENTRY_FLAG_CRT_FALSE` and continues to header erase and seal; it never calls the CRT a second time because the first call already ran its own detach unwind. The `.pdata` table is registered by Phase 6 before this call so CRT code that uses SEH can unwind.
+
+R20 erases `SizeOfHeaders` bytes at the mapped base **after** the CRT entry returns and **before** `SectionsSeal` promotes the header pages to `PAGE_READONLY`. This ordering is required: MSVC CRT attach reads the PE headers at `__ImageBase` (`__scrt_is_nonwritable_in_current_image`) to decide dynamic TLS initialization and static-vs-dynamic CRT handling; wiping earlier silently disables both. The erase is verified by reading back the MZ and PE signature offsets and requiring both to be zero, and only measured values are published in `AMGER_ENTRY_REPORT` (status, stage, kind, RVA/address, result, APC counters, bytes wiped and zero-verification).
+
+All Phase 6/7 user APCs share two global counters (not the per-invocation state, which is zeroed on each call). `g_apcOutstanding` tracks KAPC lifetime and is decremented by the kernel/rundown routine at APC_LEVEL — **before** the user stub runs, so it is not a completion signal. `g_apcStubPending` is the authoritative "a stub may still execute" signal: incremented on queue and decremented only when the poll loop observes `completion == 1`. On a timeout it stays positive, so `InitializeApcOutstanding()` remains TRUE and `InjectorExecute` skips the VAD release — a late stub calls into the mapped image, so unmapping first would crash the target. A late APC delivered after the next invocation starts cannot corrupt either counter because both are global. Entry resolution also requires the RVA to lie inside an executable section and rejects header-resident entry points, both of which would otherwise fault and leave a queued APC. The `CALLED` flag is set from the completion marker regardless of the CRT return value, and a zero return is published as measured (`AMGER_ENTRY_FLAG_CRT_FALSE`) rather than treated as an engine failure.
+
+The APC entry call runs outside the loader lock on an arbitrary target thread; payload `DllMain` restrictions still apply and the interrupted thread may hold application or loader locks. A headerless image cannot resolve its own exports via `GetProcAddress(self)`, and CRT per-thread state established on the APC thread is not automatically present on the Phase 8 donor — those are payload/Phase 8 concerns, not engine measurements. No absolute undetection is claimed: private executable VADs and kernel-caller ETW remain.
 
 # Injection: Manual Mapping
 

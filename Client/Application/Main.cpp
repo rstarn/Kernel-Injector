@@ -33,12 +33,6 @@
 
 namespace {
 
-/* STATUS_NOT_IMPLEMENTED is the driver's live answer while the deferred
- * injector phases are not wired in. Named so the deferred-execution wording
- * below does not depend on a raw NTSTATUS literal. */
-
-constexpr uint32_t kStatusNotImplemented = 0xC0000002u;
-
 std::wstring AsciiList(const char names[][AMGER_REPORT_NAME_LENGTH], uint32_t count) {
     std::wstring result;
     for (uint32_t index = 0u; index < count && index < AMGER_REPORT_MAX_MODULES; ++index) {
@@ -219,6 +213,21 @@ const wchar_t* DepStageName(uint32_t stage) {
     }
 }
 
+const wchar_t* EntryStageName(uint32_t stage) {
+    switch (stage) {
+    case AMGER_ENTRY_STAGE_NONE: return L"none";
+    case AMGER_ENTRY_STAGE_PARAMETERS: return L"parameters";
+    case AMGER_ENTRY_STAGE_PROCESS: return L"process lookup";
+    case AMGER_ENTRY_STAGE_ENTRY_RVA: return L"entry RVA";
+    case AMGER_ENTRY_STAGE_EXPORT: return L"export lookup";
+    case AMGER_ENTRY_STAGE_FORWARD: return L"forwarder";
+    case AMGER_ENTRY_STAGE_CALL: return L"CRT entry call";
+    case AMGER_ENTRY_STAGE_WIPE: return L"header erase";
+    case AMGER_ENTRY_STAGE_VERIFY: return L"erase verification";
+    default: return L"unknown";
+    }
+}
+
 const wchar_t* InitStageName(uint32_t stage) {
     switch (stage) {
     case AMGER_INIT_STAGE_NONE: return L"none";
@@ -380,15 +389,33 @@ void InjectScreen(Session& session) {
         Console::WriteRaw(L"\n");
     }
 
+    /* A client-side rejection never issued an IOCTL, so any report still in
+     * the shared area belongs to an earlier injection and must not be shown. */
+    const bool clientRejected =
+        status == AMGER_CLIENT_BAD_ARGUMENTS ||
+        status == AMGER_CLIENT_REGION_FAILED ||
+        status == AMGER_CLIENT_KICK_FAILED;
+
     AMGER_PARSER_REPORT parser = {};
-    if (session.channel.ParserReport(parser)) {
+    if (!clientRejected && session.channel.ParserReport(parser)) {
         const std::wstring importList = AsciiList(parser.ImportNames, parser.ImportModuleCount);
         const std::wstring exports = AsciiList(parser.ExportNames, parser.ExportCount);
         wchar_t reportLine[640] = {};
         const Console::Brush good = Console::Brush::LightGreen;
         const Console::Brush bad = Console::Brush::LightRed;
+        /* Phase 7 now runs the CRT entry even though Phase 8 is deferred, so
+         * the execution row must reflect the measured entry state, not the
+         * top-level status. */
+        const bool entryCalled =
+            (parser.Entry.Flags & AMGER_ENTRY_FLAG_CALLED) != 0u;
         const wchar_t* executionText =
-            status == kStatusNotImplemented ? L"not performed" : L"not reached";
+            entryCalled ? L"entry called; phase 8 pending" : L"not reached";
+
+        /* Read the dependency module count once from the local report copy
+         * and use it in both blocks, so the two rendered lines cannot disagree. */
+
+        const unsigned manualMapModules =
+            static_cast<unsigned>(parser.Dependencies.ModulesMapped);
 
         const auto emit = [](const wchar_t* label, const wchar_t* value,
                              Console::Brush brush) {
@@ -511,8 +538,7 @@ void InjectScreen(Session& session) {
         swprintf_s(reportLine, L"%u", parser.OrdinalImportCount);
         emit(L"  Imports By Ordinal: ", reportLine, good);
         Console::WriteRaw(L"\n");
-        swprintf_s(reportLine, L"%u",
-                   static_cast<unsigned>(parser.Dependencies.ModulesMapped));
+        swprintf_s(reportLine, L"%u", manualMapModules);
         emit(L"  Manual-Map Modules: ", reportLine, good);
         swprintf_s(reportLine, L"%u", parser.ApiSetCount);
         emit(L"  API-set References: ", reportLine, good);
@@ -771,7 +797,7 @@ void InjectScreen(Session& session) {
             emit(L"  File Opens: ", reportLine, good);
             Console::WriteRaw(L"\n");
 
-            swprintf_s(reportLine, L"%u", static_cast<unsigned>(dep.ModulesMapped));
+            swprintf_s(reportLine, L"%u", manualMapModules);
             emit(L"  Manually Mapped: ", reportLine, good);
             swprintf_s(reportLine, L"%u", static_cast<unsigned>(dep.ModulesRegistered));
             emit(L"  Modules Registered: ", reportLine, good);
@@ -857,7 +883,7 @@ void InjectScreen(Session& session) {
              * LoadLibrary-time activation context. Only a malformed tree is an
              * error. */
             swprintf_s(reportLine,
-                       L"0x%08X | state=%u id=%u | %u bytes | hash 0x%08X",
+                       L"0x%08X | State = %u / Id = %u | %u bytes | Hash = 0x%08X",
                        init.ActivationStatus, init.ManifestState,
                        init.ManifestId, init.ManifestBytes, init.ManifestHash);
             const bool activationOk =
@@ -889,16 +915,18 @@ void InjectScreen(Session& session) {
             emit(L"  TEB Slots Set: ", reportLine,
                  (init.Flags & AMGER_INIT_FLAG_THREAD_TLS) != 0u ? good : bad);
             if (init.ThreadsPatched == 0u) {
-                swprintf_s(reportLine, L"reasons=0x%08X snapshot=%u",
+                swprintf_s(reportLine, L"Reasons = 0x%08X / Snapshot = %u",
                            init.TlsThreadSkipMask, init.TlsSnapshotCount);
                 emit(L"  Thread Probe: ", reportLine, bad);
             }
-            swprintf_s(reportLine, L"0x%08X | create=%u delete=%u dropped=%u",
+            swprintf_s(reportLine,
+                       L"0x%08X | Create = %u / Delete = %u / Dropped = %u",
                        init.ThreadNotifyStatus, init.ThreadCreateSeen,
                        init.ThreadDeleteSeen, init.ThreadEventsDropped);
             emit(L"  Thread Notify: ", reportLine,
                  (init.Flags & AMGER_INIT_FLAG_THREAD_NOTIFY) != 0u ? good : bad);
-            swprintf_s(reportLine, L"attach queued=%u failed=%u | detach observed=%u",
+            swprintf_s(reportLine,
+                       L"Attach Queued = %u / Failed = %u | Detach Observed = %u",
                        init.ThreadAttachQueued, init.ThreadAttachFailed,
                        init.ThreadDetachObserved);
             emit(L"  Thread Callbacks: ", reportLine,
@@ -943,6 +971,70 @@ void InjectScreen(Session& session) {
                  reverted ? L"initialization reverted" : L"initialization retained",
                  reverted ? good : bad);
             emit(L"  Execution: ", executionText, bad);
+            Console::WriteRaw(L"\n");
+        }
+
+        if (parser.Entry.Flags != 0u || parser.Entry.Status != 0u) {
+            const AMGER_ENTRY_REPORT& entry = parser.Entry;
+
+            Console::WriteRaw(L"\n");
+            Console::WriteLine(L"Entry:", Console::Brush::White);
+            Console::WriteRaw(L"\n");
+
+            swprintf_s(reportLine, L"0x%08X (%s)", entry.Status,
+                       StatusName(entry.Status));
+            emit(L"  Status: ", reportLine, entry.Status == 0u ? good : bad);
+            if (entry.Status != 0u) {
+                swprintf_s(reportLine, L"0x%08X (%s)", entry.FailureStage,
+                           EntryStageName(entry.FailureStage));
+                emit(L"  Failure Stage: ", reportLine, bad);
+            }
+            Console::WriteRaw(L"\n");
+
+            const wchar_t* kind = L"unknown";
+            if (entry.EntryKind == AMGER_ENTRY_KIND_PE_ENTRY) {
+                kind = L"PE (CRT startup)";
+            } else if (entry.EntryKind == AMGER_ENTRY_KIND_EXPORT_NAME) {
+                kind = L"named export";
+            } else if (entry.EntryKind == AMGER_ENTRY_KIND_ORDINAL) {
+                kind = L"ordinal export";
+            }
+            emit(L"  Kind: ", kind,
+                 entry.EntryKind <= AMGER_ENTRY_KIND_ORDINAL ? good : bad);
+            swprintf_s(reportLine, L"RVA 0x%08X @ 0x%016llX", entry.EntryRva,
+                       static_cast<unsigned long long>(entry.EntryAddress));
+            emit(L"  Resolved Entry: ", reportLine,
+                 (entry.Flags & AMGER_ENTRY_FLAG_RESOLVED) != 0u ? good : bad);
+            if (entry.EntryKind == AMGER_ENTRY_KIND_EXPORT_NAME) {
+                swprintf_s(reportLine, L"%S", entry.EntryName);
+                emit(L"  Export Name: ", reportLine, good);
+            } else if (entry.EntryKind == AMGER_ENTRY_KIND_ORDINAL) {
+                swprintf_s(reportLine, L"%u", entry.EntryOrdinal);
+                emit(L"  Export Ordinal: ", reportLine, good);
+            }
+            Console::WriteRaw(L"\n");
+
+            /* A FALSE return is a measured payload result (flagged by the
+             * driver), not a failed engine call. The brush tracks whether the
+             * call itself completed and was measured. */
+            const bool crtFalse =
+                (entry.Flags & AMGER_ENTRY_FLAG_CRT_FALSE) != 0u;
+            swprintf_s(reportLine, L"0x%08X%s", entry.EntryResult,
+                       crtFalse ? L" (payload refused attach)" : L"");
+            emit(L"  CRT Result: ", reportLine,
+                 (entry.Flags & AMGER_ENTRY_FLAG_CALLED) != 0u ? good : bad);
+            swprintf_s(reportLine,
+                       L"%u / %u | Started = %u / Completion = 0x%08X",
+                       entry.ApcRuns, entry.ApcFailures, entry.ApcStubStarted,
+                       entry.ApcCompletionValue);
+            emit(L"  APC: ", reportLine,
+                 entry.ApcFailures == 0u ? good : bad);
+            Console::WriteRaw(L"\n");
+
+            swprintf_s(reportLine, L"%u bytes | Signature Zero = %u",
+                       entry.BytesWiped, entry.HeaderSignatureZeroVerified);
+            emit(L"  Header Erase: ", reportLine,
+                 (entry.Flags & AMGER_ENTRY_FLAG_WIPED) != 0u ? good : bad);
             Console::WriteRaw(L"\n");
         }
     }

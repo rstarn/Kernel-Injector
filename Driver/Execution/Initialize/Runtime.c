@@ -137,7 +137,6 @@ typedef struct _AMGER_RUNTIME_STATE {
     BOOLEAN DetourStubsReady;
     BOOLEAN DetourInstalled;
     BOOLEAN LeaveCodePage;
-    uint32_t PendingApcs;
 
     uint64_t NtdllBase;
     uint32_t NtdllSize;
@@ -188,6 +187,19 @@ static AMGER_RUNTIME_STATE g_state;
  * held by an in-flight initialization. */
 
 static volatile long g_initBusy = 0L;
+
+/* KAPC lifetime: incremented before KeInsertQueueApc, decremented by the
+ * kernel/rundown routine (which runs at APC_LEVEL *before* the user stub).
+ * This is NOT a "stub finished" signal. */
+
+static volatile long g_apcOutstanding = 0L;
+
+/* Stubs whose user-mode completion marker has not been observed. Incremented
+ * when an APC is queued, decremented only when the poll loop reads
+ * completion == 1. On a timeout it stays positive so the injector will not
+ * unmap the image a late stub may still call into. */
+
+static volatile long g_apcStubPending = 0L;
 
 typedef struct _AMGER_R25_EVENT {
     HANDLE ProcessId;
@@ -1089,12 +1101,12 @@ static VOID ApcKernelRoutine(struct _KAPC* apc,
     UNREFERENCED_PARAMETER(normalContext);
     UNREFERENCED_PARAMETER(argument1);
     UNREFERENCED_PARAMETER(argument2);
-    InterlockedDecrement((volatile long*)&g_state.PendingApcs);
+    (void)InterlockedDecrement(&g_apcOutstanding);
     ExFreePool(apc);
 }
 
 static VOID ApcRundownRoutine(struct _KAPC* apc) {
-    InterlockedDecrement((volatile long*)&g_state.PendingApcs);
+    (void)InterlockedDecrement(&g_apcOutstanding);
     ExFreePool(apc);
 }
 
@@ -1315,6 +1327,14 @@ static NTSTATUS FindThread(PAMGER_RUNTIME_STATE state, PETHREAD* out) {
     }
     status = PsLookupThreadByThreadId(tid, out);
     ExFreePoolWithTag(buffer, 'grmT');
+    if (NT_SUCCESS(status) && PsGetThreadProcessId(*out) != state->ProcessId) {
+        /* The TID was recycled between the system-information snapshot and
+         * the lookup. Never queue an APC to an unrelated process. */
+
+        ObDereferenceObject(*out);
+        *out = NULL;
+        return STATUS_NOT_FOUND;
+    }
     return status;
 }
 
@@ -1449,9 +1469,11 @@ static NTSTATUS RunJobs(PAMGER_RUNTIME_STATE state) {
                     (AMGER_NORMAL_ROUTINE)(uintptr_t)state->CodePage,
                     UserMode, (PVOID)(uintptr_t)state->DataPage);
 
-    InterlockedIncrement((volatile long*)&state->PendingApcs);
+    InterlockedIncrement(&g_apcOutstanding);
+    InterlockedIncrement(&g_apcStubPending);
     if (!KeInsertQueueApc(apc, NULL, NULL, 0)) {
-        InterlockedDecrement((volatile long*)&state->PendingApcs);
+        InterlockedDecrement(&g_apcOutstanding);
+        InterlockedDecrement(&g_apcStubPending);
         ExFreePoolWithTag(apc, 'grmP');
         ObDereferenceObject(thread);
         return Fail(state, AMGER_INIT_STAGE_APC, STATUS_UNSUCCESSFUL);
@@ -1492,7 +1514,8 @@ static NTSTATUS RunJobs(PAMGER_RUNTIME_STATE state) {
     if (completion != 1u) {
         ++state->ApcFailures;
         state->Report->ApcFailures = state->ApcFailures;
-        /* The APC may still be delivered later. Keep its code page alive. */
+        /* No completion observed: the stub may still run. g_apcStubPending
+         * stays positive so the injector will not unmap the image. */
 
         state->LeaveCodePage = TRUE;
         /* STATUS_TIMEOUT is 0x00000102, which NT_SUCCESS() treats as success.
@@ -1500,8 +1523,9 @@ static NTSTATUS RunJobs(PAMGER_RUNTIME_STATE state) {
 
         return Fail(state, AMGER_INIT_STAGE_APC, STATUS_UNSUCCESSFUL);
     }
-    /* PendingApcs is decremented by the APC kernel/rundown routine, not here:
-     * a completed NormalRoutine does not mean the APC object has been reclaimed. */
+    (void)InterlockedDecrement(&g_apcStubPending);
+    /* g_apcOutstanding is decremented by the APC kernel/rundown routine, which
+     * runs at APC_LEVEL before this user stub — it is not a completion signal. */
 
     ++state->ApcRuns;
     state->Report->ApcRuns = state->ApcRuns;
@@ -1848,11 +1872,13 @@ static VOID AmgerR25ApcKernelRoutine(struct _KAPC* apc,
     UNREFERENCED_PARAMETER(argument1);
     UNREFERENCED_PARAMETER(argument2);
     (void)InterlockedDecrement(&g_r25.PendingApcs);
+    (void)InterlockedDecrement(&g_apcOutstanding);
     ExFreePool(apc);
 }
 
 static VOID AmgerR25ApcRundownRoutine(struct _KAPC* apc) {
     (void)InterlockedDecrement(&g_r25.PendingApcs);
+    (void)InterlockedDecrement(&g_apcOutstanding);
     ExFreePool(apc);
 }
 
@@ -1992,11 +2018,13 @@ static VOID AmgerR25AttachThread(HANDLE threadId) {
                     (AMGER_NORMAL_ROUTINE)(uintptr_t)codePage,
                     UserMode, (PVOID)(uintptr_t)dataPage);
     (void)InterlockedIncrement(&g_r25.PendingApcs);
+    (void)InterlockedIncrement(&g_apcOutstanding);
     if (KeInsertQueueApc(apc, NULL, NULL, 0)) {
         (void)QueueAlertBooster(thread);
         (void)InterlockedIncrement(&g_r25.AttachQueued);
     } else {
         (void)InterlockedDecrement(&g_r25.PendingApcs);
+        (void)InterlockedDecrement(&g_apcOutstanding);
         ExFreePoolWithTag(apc, 'grmP');
         (void)InterlockedIncrement(&g_r25.AttachFailed);
     }
@@ -2077,7 +2105,9 @@ static VOID UnregisterThreadTlsNotify(VOID) {
                             &zero, sizeof(zero));
         }
         ReleasePrivatePage(&scratch, &g_r25.Blocks[i]);
-        if (g_r25.PendingApcs == 0L) {
+        if (g_r25.PendingApcs == 0L &&
+            InterlockedCompareExchange(&g_apcOutstanding, 0L, 0L) == 0L &&
+            !InitializeApcOutstanding()) {
             ReleasePrivatePage(&scratch, &g_r25.Codes[i]);
             ReleasePrivatePage(&scratch, &g_r25.Datas[i]);
         }
@@ -2373,7 +2403,7 @@ VOID InitializeRevert(const AMGER_INIT_CONTEXT* context) {
      * memory a live APC is about to execute and read. */
 
     if (!state->LeaveCodePage &&
-        InterlockedCompareExchange((volatile long*)&state->PendingApcs, 0L, 0L) == 0L) {
+        InterlockedCompareExchange(&g_apcOutstanding, 0L, 0L) == 0L) {
         ReleasePrivatePage(state, &state->CodePage);
         ReleasePrivatePage(state, &state->DataPage);
     } else {
@@ -2385,4 +2415,347 @@ VOID InitializeRevert(const AMGER_INIT_CONTEXT* context) {
     state->Process = NULL;
     state->Report->Flags |= AMGER_INIT_FLAG_REVERTED;
     InterlockedExchange(&g_initBusy, 0L);
+}
+
+BOOLEAN InitializeApcOutstanding(VOID) {
+    /* g_apcStubPending is the authoritative "a user stub may still execute"
+     * signal: it is cleared only when completion is observed. g_apcOutstanding
+     * tracks KAPC lifetime and reaches zero at APC_LEVEL *before* the stub
+     * runs, so it must not gate VAD or stub-page release. */
+
+    return InterlockedCompareExchange(&g_apcStubPending, 0L, 0L) != 0L;
+}
+
+/* ------------------------------------------------------------------ */
+/* Phase 7 - entry selection, CRT call and header erase                 */
+/* ------------------------------------------------------------------ */
+
+static NTSTATUS FailEntry(PAMGER_ENTRY_REPORT report, uint32_t stage,
+                          NTSTATUS status) {
+    report->FailureStage = stage;
+    report->Status = (uint32_t)status;
+    return status;
+}
+
+NTSTATUS InvokeEntryPhase(const AMGER_INIT_CONTEXT* context,
+                          const AMGER_ENTRY_SELECTION* selection,
+                          PAMGER_ENTRY_REPORT report) {
+    PAMGER_RUNTIME_STATE state = &g_state;
+    AMGER_EXPORT_RESULT resolved;
+    AMGER_JOB job;
+    PRKAPC apc;
+    PETHREAD thread = NULL;
+    UCHAR code[AMGER_STUB_MAX];
+    UCHAR block[AMGER_JOB_BLOCK_SIZE];
+    uint64_t codePage = 0u;
+    uint64_t dataPage = 0u;
+    uint64_t resultAddress;
+    uint64_t rawResult = 0u;
+    uint32_t tail[2] = { 0u, 0u };
+    uint32_t count = 1u;
+    uint32_t zero = 0u;
+    uint32_t attempt;
+    uint32_t wipeBytes;
+    uint32_t check[2] = { 0u, 0u };
+    UCHAR* zeros = NULL;
+    KAPC_STATE apcState;
+    AMGER_RUNTIME_STATE scratch;
+    NTSTATUS status;
+
+    if (context == NULL || selection == NULL || report == NULL ||
+        state->Process == NULL || state->Image == NULL) {
+        if (report != NULL) {
+            (void)FailEntry(report, AMGER_ENTRY_STAGE_PARAMETERS,
+                            STATUS_INVALID_PARAMETER);
+        }
+        return STATUS_INVALID_PARAMETER;
+    }
+    report->BuildId = AMGER_ENTRY_BUILD_ID;
+    report->RemoteBase = state->RemoteBase;
+    report->EntryKind = selection->EntryKind;
+    report->EntryOrdinal = selection->EntryOrdinal;
+    RtlCopyMemory(report->EntryName, selection->EntryName,
+                  AMGER_ENTRY_NAME_LENGTH - 1u);
+    report->EntryName[AMGER_ENTRY_NAME_LENGTH - 1u] = 0;
+
+    if (selection->EntryKind == AMGER_ENTRY_KIND_PE_ENTRY) {
+        report->EntryRva = state->Image->AddressOfEntryPoint;
+        if (report->EntryRva == 0u) {
+            return FailEntry(report, AMGER_ENTRY_STAGE_ENTRY_RVA,
+                             STATUS_NOT_FOUND);
+        }
+        /* An entry inside the headers would execute from a page that is still
+         * RW until SectionsSeal (which runs after this phase). Reject it
+         * instead of timing out on a user-mode fault. */
+        if (report->EntryRva < state->Image->SizeOfHeaders) {
+            return FailEntry(report, AMGER_ENTRY_STAGE_ENTRY_RVA,
+                             STATUS_NOT_SUPPORTED);
+        }
+        report->EntryAddress = state->RemoteBase + report->EntryRva;
+        report->Flags |= AMGER_ENTRY_FLAG_RESOLVED;
+    } else {
+        if (selection->EntryKind != AMGER_ENTRY_KIND_EXPORT_NAME &&
+            selection->EntryKind != AMGER_ENTRY_KIND_ORDINAL) {
+            return FailEntry(report, AMGER_ENTRY_STAGE_PARAMETERS,
+                             STATUS_INVALID_PARAMETER);
+        }
+        RtlZeroMemory(&resolved, sizeof(resolved));
+        KeStackAttachProcess((PRKPROCESS)state->Process, &apcState);
+        if (selection->EntryKind == AMGER_ENTRY_KIND_EXPORT_NAME) {
+            /* report->EntryName is explicitly NUL-terminated above; the wire
+             * field in selection is a fixed 32 bytes with no terminator. */
+            status = LookupGetExport(state->RemoteBase,
+                                     state->Image->SizeOfImage,
+                                     report->EntryName, 0u, FALSE,
+                                     &resolved);
+        } else {
+            status = LookupGetExport(state->RemoteBase,
+                                     state->Image->SizeOfImage, NULL,
+                                     (uint16_t)selection->EntryOrdinal, TRUE,
+                                     &resolved);
+        }
+        KeUnstackDetachProcess(&apcState);
+        if (!NT_SUCCESS(status) || resolved.Address == 0u) {
+            return FailEntry(report, AMGER_ENTRY_STAGE_EXPORT,
+                             NT_SUCCESS(status) ? STATUS_NOT_FOUND : status);
+        }
+        if (resolved.Forwarded) {
+            return FailEntry(report, AMGER_ENTRY_STAGE_FORWARD,
+                             STATUS_NOT_SUPPORTED);
+        }
+        report->Forwarded = 0u;
+        report->EntryAddress = resolved.Address;
+        if (report->EntryAddress < state->RemoteBase ||
+            report->EntryAddress - state->RemoteBase >=
+                state->Image->SizeOfImage) {
+            return FailEntry(report, AMGER_ENTRY_STAGE_EXPORT,
+                             STATUS_INVALID_PARAMETER);
+        }
+        report->EntryRva =
+            (uint32_t)(report->EntryAddress - state->RemoteBase);
+        report->Flags |= AMGER_ENTRY_FLAG_RESOLVED;
+    }
+
+    /* A resolved export may point at data. Calling it would fault in user
+     * mode, take the 8-second timeout and leave a queued APC behind. Require
+     * the entry RVA to lie in an executable section before queueing. */
+
+    {
+        BOOLEAN inCode = FALSE;
+        uint16_t sectionIndex;
+
+        for (sectionIndex = 0u;
+             sectionIndex < state->Image->NumberOfSections &&
+             sectionIndex < AMGER_PE_MAX_SECTIONS; ++sectionIndex) {
+            const AMGER_PE_SECTION* section =
+                &state->Image->Sections[sectionIndex];
+            uint32_t span = section->VirtualSize > section->RawSize
+                                ? section->VirtualSize
+                                : section->RawSize;
+            if (span == 0u ||
+                (section->Characteristics & AMGER_IMAGE_SCN_MEM_EXECUTE) == 0u) {
+                continue;
+            }
+            if (report->EntryRva >= section->VirtualAddress &&
+                report->EntryRva - section->VirtualAddress < span) {
+                inCode = TRUE;
+                break;
+            }
+        }
+        if (!inCode) {
+            return FailEntry(report, AMGER_ENTRY_STAGE_ENTRY_RVA,
+                             STATUS_NOT_SUPPORTED);
+        }
+    }
+
+    RtlZeroMemory(&scratch, sizeof(scratch));
+    scratch.Process = state->Process;
+    if (!NT_SUCCESS(AllocatePrivatePage(&scratch, &codePage, PAGE_READWRITE)) ||
+        !NT_SUCCESS(AllocatePrivatePage(&scratch, &dataPage, PAGE_READWRITE))) {
+        ReleasePrivatePage(&scratch, &codePage);
+        ReleasePrivatePage(&scratch, &dataPage);
+        return FailEntry(report, AMGER_ENTRY_STAGE_CALL,
+                         STATUS_INSUFFICIENT_RESOURCES);
+    }
+
+    RtlZeroMemory(block, sizeof(block));
+    RtlZeroMemory(code, sizeof(code));
+    RtlZeroMemory(&job, sizeof(job));
+    job.Function = report->EntryAddress;
+    job.Arg1 = state->RemoteBase;
+    job.Arg2 = 1u; /* DLL_PROCESS_ATTACH */
+    job.Arg3 = 0u; /* lpvReserved is NULL for a normal attach */
+    *(uint64_t*)block = count;
+    RtlCopyMemory(block + 8u, &job, sizeof(job));
+    EmitStub(code, dataPage, count);
+    KeStackAttachProcess((PRKPROCESS)state->Process, &apcState);
+    if (!UserWrite(state->Process, dataPage, block, sizeof(block)) ||
+        !UserWrite(state->Process, codePage, code, sizeof(code)) ||
+        !UserWrite(state->Process, dataPage + AMGER_COMPLETION_OFF,
+                   &zero, sizeof(zero))) {
+        KeUnstackDetachProcess(&apcState);
+        ReleasePrivatePage(&scratch, &codePage);
+        ReleasePrivatePage(&scratch, &dataPage);
+        return FailEntry(report, AMGER_ENTRY_STAGE_CALL,
+                         STATUS_ACCESS_VIOLATION);
+    }
+    KeUnstackDetachProcess(&apcState);
+
+    {
+        KAPC_STATE protectState;
+        SIZE_T pageSize = AMGER_PAGE_SIZE_4K;
+        ULONG old = 0u;
+        PVOID base = (PVOID)(uintptr_t)codePage;
+        NTSTATUS protectStatus;
+
+        KeStackAttachProcess((PRKPROCESS)state->Process, &protectState);
+        protectStatus = ZwProtectVirtualMemory(ZwCurrentProcess(), &base,
+                                               &pageSize, PAGE_EXECUTE_READ,
+                                               &old);
+        KeUnstackDetachProcess(&protectState);
+        if (!NT_SUCCESS(protectStatus)) {
+            ReleasePrivatePage(&scratch, &codePage);
+            ReleasePrivatePage(&scratch, &dataPage);
+            return FailEntry(report, AMGER_ENTRY_STAGE_CALL, protectStatus);
+        }
+    }
+
+    status = FindThread(state, &thread);
+    if (!NT_SUCCESS(status)) {
+        ReleasePrivatePage(&scratch, &codePage);
+        ReleasePrivatePage(&scratch, &dataPage);
+        return FailEntry(report, AMGER_ENTRY_STAGE_CALL, status);
+    }
+#pragma warning(suppress : 4996 28197)
+    apc = (PRKAPC)ExAllocatePoolWithTag(NonPagedPoolNx, sizeof(KAPC), 'grmP');
+    if (apc == NULL) {
+        ObDereferenceObject(thread);
+        ReleasePrivatePage(&scratch, &codePage);
+        ReleasePrivatePage(&scratch, &dataPage);
+        return FailEntry(report, AMGER_ENTRY_STAGE_CALL,
+                         STATUS_INSUFFICIENT_RESOURCES);
+    }
+    KeInitializeApc(apc, (PRKTHREAD)thread, AmgerOriginalApcEnvironment,
+                    ApcKernelRoutine, ApcRundownRoutine,
+                    (AMGER_NORMAL_ROUTINE)(uintptr_t)codePage,
+                    UserMode, (PVOID)(uintptr_t)dataPage);
+    (void)InterlockedIncrement(&g_apcOutstanding);
+    (void)InterlockedIncrement(&g_apcStubPending);
+    if (!KeInsertQueueApc(apc, NULL, NULL, 0)) {
+        (void)InterlockedDecrement(&g_apcOutstanding);
+        (void)InterlockedDecrement(&g_apcStubPending);
+        ExFreePoolWithTag(apc, 'grmP');
+        ObDereferenceObject(thread);
+        ReleasePrivatePage(&scratch, &codePage);
+        ReleasePrivatePage(&scratch, &dataPage);
+        return FailEntry(report, AMGER_ENTRY_STAGE_CALL, STATUS_UNSUCCESSFUL);
+    }
+    (void)QueueAlertBooster(thread);
+    for (attempt = 0u; attempt < (AMGER_APC_WAIT_MS / 2u); ++attempt) {
+        LARGE_INTEGER interval;
+        interval.QuadPart = -20000LL;
+        KeDelayExecutionThread(KernelMode, FALSE, &interval);
+        if ((attempt % 125u) == 124u) {
+            (void)QueueAlertBooster(thread);
+        }
+        if (!UserRead(state->Process, dataPage + AMGER_COMPLETION_OFF,
+                      tail, sizeof(tail))) {
+            break;
+        }
+        report->ApcCompletionValue = tail[0];
+        report->ApcStubStarted =
+            (tail[1] == AMGER_STUB_STARTED_MARK) ? 1u : 0u;
+        if (tail[0] == 1u) {
+            break;
+        }
+    }
+    ObDereferenceObject(thread);
+    report->ApcRuns = (report->ApcCompletionValue == 1u) ? 1u : 0u;
+    report->ApcFailures = (report->ApcCompletionValue == 1u) ? 0u : 1u;
+    if (report->ApcCompletionValue == 1u) {
+        /* The completion marker proves the stub ran, even if the entry later
+         * returned zero. Report both facts instead of hiding the call. */
+
+        report->Flags |= AMGER_ENTRY_FLAG_CALLED;
+        (void)InterlockedDecrement(&g_apcStubPending);
+    } else {
+        /* No completion: the stub may still run. Keep g_apcStubPending set so
+         * RevertImage will not unmap the image it may still call into. */
+
+        state->LeaveCodePage = TRUE;
+        return FailEntry(report, AMGER_ENTRY_STAGE_CALL, STATUS_UNSUCCESSFUL);
+    }
+    resultAddress = dataPage + 8u + ((uint64_t)0u * sizeof(AMGER_JOB)) + 32u;
+    if (!UserRead(state->Process, resultAddress, &rawResult,
+                  sizeof(rawResult))) {
+        ReleasePrivatePage(&scratch, &codePage);
+        ReleasePrivatePage(&scratch, &dataPage);
+        return FailEntry(report, AMGER_ENTRY_STAGE_CALL,
+                         STATUS_ACCESS_VIOLATION);
+    }
+    report->EntryResult = (uint32_t)rawResult;
+    if (report->EntryResult == 0u) {
+        /* A FALSE return is a measured payload result, not an engine error.
+         * The CRT already ran its own detach unwind — never call it again —
+         * but the header erase and protection seal are still valid passes. */
+        report->Flags |= AMGER_ENTRY_FLAG_CRT_FALSE;
+    }
+
+    /* From here on the APC has completed, so its stub is finished and the
+     * private pages can be released on every exit path. */
+
+    wipeBytes = state->Image->SizeOfHeaders;
+    if (wipeBytes == 0u || wipeBytes > 0x10000u) {
+        ReleasePrivatePage(&scratch, &codePage);
+        ReleasePrivatePage(&scratch, &dataPage);
+        return FailEntry(report, AMGER_ENTRY_STAGE_WIPE,
+                         STATUS_INVALID_PARAMETER);
+    }
+#pragma warning(suppress : 4996)
+    zeros = (UCHAR*)ExAllocatePoolWithTag(NonPagedPoolNx, wipeBytes, 'grmW');
+    if (zeros == NULL) {
+        ReleasePrivatePage(&scratch, &codePage);
+        ReleasePrivatePage(&scratch, &dataPage);
+        return FailEntry(report, AMGER_ENTRY_STAGE_WIPE,
+                         STATUS_INSUFFICIENT_RESOURCES);
+    }
+    RtlZeroMemory(zeros, wipeBytes);
+    KeStackAttachProcess((PRKPROCESS)state->Process, &apcState);
+    if (!UserWrite(state->Process, state->RemoteBase, zeros, wipeBytes)) {
+        KeUnstackDetachProcess(&apcState);
+        ExFreePoolWithTag(zeros, 'grmW');
+        ReleasePrivatePage(&scratch, &codePage);
+        ReleasePrivatePage(&scratch, &dataPage);
+        return FailEntry(report, AMGER_ENTRY_STAGE_WIPE,
+                         STATUS_ACCESS_VIOLATION);
+    }
+    check[0] = 0xFFFFFFFFu;
+    check[1] = 0xFFFFFFFFu;
+    /* Sample only the MZ and PE signatures, not the whole wiped range; the
+     * field name says exactly that. Read four bytes so the whole uint32 is
+     * overwritten — a 2-byte read leaves the upper half as 0xFFFF. */
+    (void)UserRead(state->Process, state->RemoteBase, &check[0], 4u);
+    (void)UserRead(state->Process,
+                   state->RemoteBase + state->Image->PeOffset,
+                   &check[1], 4u);
+    KeUnstackDetachProcess(&apcState);
+    ExFreePoolWithTag(zeros, 'grmW');
+    report->BytesWiped = wipeBytes;
+    report->HeaderSignatureZeroVerified =
+        (check[0] == 0u && check[1] == 0u) ? 1u : 0u;
+    if (report->HeaderSignatureZeroVerified == 0u) {
+        ReleasePrivatePage(&scratch, &codePage);
+        ReleasePrivatePage(&scratch, &dataPage);
+        return FailEntry(report, AMGER_ENTRY_STAGE_VERIFY,
+                         STATUS_INVALID_DEVICE_STATE);
+    }
+    report->Flags |= AMGER_ENTRY_FLAG_WIPED;
+    report->FailureStage = AMGER_ENTRY_STAGE_NONE;
+    report->Status = (uint32_t)STATUS_SUCCESS;
+
+    if (InterlockedCompareExchange(&g_apcOutstanding, 0L, 0L) == 0L) {
+        ReleasePrivatePage(&scratch, &codePage);
+        ReleasePrivatePage(&scratch, &dataPage);
+    }
+    return STATUS_SUCCESS;
 }

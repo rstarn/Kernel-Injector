@@ -407,6 +407,15 @@ static NTSTATUS CaptureSnapshot(
         Snapshot->TargetProcessId = Header->TargetProcessId;
         Snapshot->Options = Header->Options;
         Snapshot->CompletionEventHandle = Header->CompletionEventHandle;
+        {
+            const AMGER_ENTRY_CONTROL* entry =
+                (const AMGER_ENTRY_CONTROL*)
+                    &Header->Reserved[AMGER_ENTRY_CONTROL_OFFSET];
+            Snapshot->EntryKind = entry->EntryKind;
+            Snapshot->EntryOrdinal = entry->EntryOrdinal;
+            RtlCopyMemory(Snapshot->EntryName, entry->EntryName,
+                          AMGER_ENTRY_NAME_LENGTH);
+        }
         MemoryBarrier();
 
         if ((uint32_t)InterlockedCompareExchange(
@@ -512,12 +521,12 @@ static NTSTATUS KickWorker(PVOID ContextParameter) {
      * leave a value from an earlier command visible to the client. */
 
     {
-        /* Clear Reserved[4..63], which includes the result slot at [8..15];
-         * sizeof(AMGER_RESULT_CONTROL) - 4 leaves the seqlock at [0..3] intact.
-         * A separate ResultValue store here would only be zeroed again below. */
+        /* Clear only Reserved[4..15]: the padding at [4..7] and the result slot
+         * at [8..15]. The seqlock is [0..3] and the R13 entry control is
+         * [16..63] — both must survive until CaptureSnapshot reads them. */
 
         RtlZeroMemory((PVOID)&context->Header->Reserved[4],
-                      sizeof(AMGER_RESULT_CONTROL) - 4);
+                      AMGER_RESULT_ZERO_BYTES);
         RtlZeroMemory((PUCHAR)g_sharedSystemAddress + g_sharedRegionSize -
                           AMGER_LOG_AREA_SIZE - AMGER_REPORT_AREA_SIZE,
                       AMGER_REPORT_AREA_SIZE);
@@ -611,6 +620,9 @@ static NTSTATUS KickWorker(PVOID ContextParameter) {
         }
         if (dispatch.InitReport.Flags != 0u || dispatch.InitReport.Status != 0u) {
             report.Initialization = dispatch.InitReport;
+        }
+        if (dispatch.EntryReport.Flags != 0u || dispatch.EntryReport.Status != 0u) {
+            report.Entry = dispatch.EntryReport;
         }
         MemoryBarrier();
         RtlCopyMemory(reportArea, &report, sizeof(report));

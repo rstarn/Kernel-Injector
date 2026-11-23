@@ -63,7 +63,10 @@ public:
 
     uint32_t LastFault();
     uint32_t Inject(uint32_t targetProcessId, uint32_t options,
-                    const void* payload, size_t payloadSize);
+                    const void* payload, size_t payloadSize,
+                    uint32_t entryKind = AMGER_ENTRY_KIND_PE_ENTRY,
+                    uint32_t entryOrdinal = 0u,
+                    const char* entryName = "");
     bool Unload();
     void Disconnect();
 
@@ -89,7 +92,10 @@ private:
                              uint64_t payloadVirtualAddress,
                              uint64_t payloadSize,
                              uint32_t targetProcessId,
-                             uint32_t options);
+                             uint32_t options,
+                             uint32_t entryKind = AMGER_ENTRY_KIND_PE_ENTRY,
+                             uint32_t entryOrdinal = 0u,
+                             const char* entryName = "");
     static uint32_t ReadFinalStatus(volatile AMGER_COMMAND_HEADER* header);
     bool ConnectUnlocked(size_t regionSize);
     bool EnsureRegionUnlocked(size_t regionSize);

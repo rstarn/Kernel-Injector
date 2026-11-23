@@ -25,7 +25,29 @@ typedef struct _AMGER_INIT_CONTEXT {
     PAMGER_INIT_REPORT Report;
 } AMGER_INIT_CONTEXT, * PAMGER_INIT_CONTEXT;
 
+typedef struct _AMGER_ENTRY_SELECTION {
+    uint32_t EntryKind;
+    uint32_t EntryOrdinal;
+    char     EntryName[AMGER_ENTRY_NAME_LENGTH];
+} AMGER_ENTRY_SELECTION, * PAMGER_ENTRY_SELECTION;
+
 NTSTATUS InitializePhase(const AMGER_INIT_CONTEXT* Context);
 VOID InitializeRevert(const AMGER_INIT_CONTEXT* Context);
+
+/* TRUE while any user APC queued by Phase 6 or 7 may still execute. The
+ * injector must not release the image VAD until this returns FALSE: a late
+ * APC's stub calls into the mapped image, so unmapping first crashes the
+ * target process. */
+
+BOOLEAN InitializeApcOutstanding(VOID);
+
+/* Phase 7 resolves the selected entry, calls the image's CRT entry once with
+ * DLL_PROCESS_ATTACH through a dedicated user APC, then erases the mapped PE
+ * headers while they are still writable. It must run after InitializePhase
+ * and before SectionsSeal. */
+
+NTSTATUS InvokeEntryPhase(const AMGER_INIT_CONTEXT* Context,
+                          const AMGER_ENTRY_SELECTION* Selection,
+                          PAMGER_ENTRY_REPORT Report);
 
 #endif /* AMGER_RUNTIME_H */

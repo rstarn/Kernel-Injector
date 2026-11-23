@@ -5,10 +5,11 @@
 /* INJECT consumes the full payload contract: a real target, a bounded payload
  * at the fixed offset, only known option bits, and synchronous completion.
  * The bridge has already bounds-checked the range inside the registered MDL;
- * this layer validates the command-level semantics. Phases 0 through 6 are
- * linked, including phase 6 Initialize (executed then rolled back); phases 7-8
- * are deferred, so a valid request reports NOT_IMPLEMENTED after the image has
- * been mapped, relocated, imported, dependency-bound, initialized and sealed. */
+ * this layer validates the command-level semantics. Phases 0 through 7 are
+ * linked, including phase 6 Initialize and phase 7 Entry (both executed then
+ * rolled back); only phase 8 (Execute) is deferred, so a valid request reports
+ * NOT_IMPLEMENTED after the image has been mapped, relocated, imported,
+ * dependency-bound, initialized, entered, header-erased and sealed. */
 
 static NTSTATUS ValidateInjectRequest(const AMGER_DISPATCH_CONTEXT* Context) {
     const AMGER_COMMAND_SNAPSHOT* snapshot = Context->Snapshot;
@@ -22,6 +23,9 @@ static NTSTATUS ValidateInjectRequest(const AMGER_DISPATCH_CONTEXT* Context) {
         Context->PayloadSize != (SIZE_T)snapshot->PayloadSize ||
         Context->PayloadOffset != (SIZE_T)AMGER_PAYLOAD_OFFSET ||
         (snapshot->Options & ~AMGER_OPTION_KNOWN_MASK) != 0u ||
+        snapshot->EntryKind > AMGER_ENTRY_KIND_ORDINAL ||
+        (snapshot->EntryKind == AMGER_ENTRY_KIND_ORDINAL &&
+         snapshot->EntryOrdinal > 0xFFFFu) ||
         snapshot->CompletionEventHandle != 0u) {
         return STATUS_INVALID_PARAMETER;
     }
@@ -51,6 +55,7 @@ NTSTATUS DispatcherDispatch(
         RtlZeroMemory(&Context->ImportReport, sizeof(Context->ImportReport));
         RtlZeroMemory(&Context->DepReport, sizeof(Context->DepReport));
         RtlZeroMemory(&Context->InitReport, sizeof(Context->InitReport));
+        RtlZeroMemory(&Context->EntryReport, sizeof(Context->EntryReport));
         Context->StageId = (uint16_t)AMGER_LOG_ID_HEADER_VALIDATE;
 
         if (snapshot->Magic != Context->Magic ||
@@ -106,6 +111,12 @@ NTSTATUS DispatcherDispatch(
                     inject.ImportReport = &Context->ImportReport;
                     inject.DepReport = &Context->DepReport;
                     inject.InitReport = &Context->InitReport;
+                    inject.EntrySelection.EntryKind = snapshot->EntryKind;
+                    inject.EntrySelection.EntryOrdinal = snapshot->EntryOrdinal;
+                    RtlCopyMemory(inject.EntrySelection.EntryName,
+                                  snapshot->EntryName,
+                                  AMGER_ENTRY_NAME_LENGTH);
+                    inject.EntryReport = &Context->EntryReport;
                     Context->StageId = (uint16_t)AMGER_LOG_ID_INJECT;
                     status = InjectorExecute(&inject, &remoteBase);
                     if (NT_SUCCESS(status)) {

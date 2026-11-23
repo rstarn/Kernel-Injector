@@ -65,7 +65,10 @@ void ChannelClient::WriteCommand(volatile AMGER_COMMAND_HEADER* header,
                                  uint64_t payloadVirtualAddress,
                                  uint64_t payloadSize,
                                  uint32_t targetProcessId,
-                                 uint32_t options) {
+                                 uint32_t options,
+                                 uint32_t entryKind,
+                                 uint32_t entryOrdinal,
+                                 const char* entryName) {
     volatile AMGER_HEADER_CONTROL* control =
         reinterpret_cast<volatile AMGER_HEADER_CONTROL*>(&header->Reserved[0]);
 
@@ -85,6 +88,29 @@ void ChannelClient::WriteCommand(volatile AMGER_COMMAND_HEADER* header,
     header->TargetProcessId = targetProcessId;
     header->Options = options;
     header->CompletionEventHandle = 0u;
+    {
+        volatile AMGER_ENTRY_CONTROL* entry =
+            reinterpret_cast<volatile AMGER_ENTRY_CONTROL*>(
+                &header->Reserved[AMGER_ENTRY_CONTROL_OFFSET]);
+        entry->EntryKind = entryKind;
+        entry->EntryOrdinal = entryOrdinal;
+        for (size_t i = 0; i < sizeof(entry->EntryName); ++i) {
+            entry->EntryName[i] = 0;
+        }
+        if (entryName != nullptr) {
+            size_t length = 0;
+            while (entryName[length] != '\0' &&
+                   length + 1u < sizeof(entry->EntryName)) {
+                ++length;
+            }
+            for (size_t i = 0; i < length; ++i) {
+                entry->EntryName[i] = entryName[i];
+            }
+        }
+        for (size_t i = 0; i < sizeof(entry->Reserved); ++i) {
+            entry->Reserved[i] = 0;
+        }
+    }
 
     MemoryBarrier();
     InterlockedExchange(sequenceAddress, static_cast<long>(sequence + 1u));
@@ -268,7 +294,10 @@ uint32_t ChannelClient::LastFault() {
 uint32_t ChannelClient::Inject(uint32_t targetProcessId,
                                uint32_t options,
                                const void* payload,
-                               size_t payloadSize) {
+                               size_t payloadSize,
+                               uint32_t entryKind,
+                               uint32_t entryOrdinal,
+                               const char* entryName) {
     std::lock_guard<std::mutex> lock(operationMutex);
 
     /* Clear any value left by a prior command so a failed inject cannot show a
@@ -297,7 +326,10 @@ uint32_t ChannelClient::Inject(uint32_t targetProcessId,
                  reinterpret_cast<uint64_t>(payloadTarget),
                  static_cast<uint64_t>(payloadSize),
                  targetProcessId,
-                 options);
+                 options,
+                 entryKind,
+                 entryOrdinal,
+                 entryName);
 
     DWORD bytesReturned = 0u;
     (void)DeviceIoControl(

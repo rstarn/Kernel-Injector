@@ -59,6 +59,17 @@
                                  AMGER_OPTION_VIRTUAL_MACHINE_PROTECT_WAIT | \
                                  AMGER_OPTION_HEADER_ERASURE)
 
+/* R13 entry selection, carried in AMGER_COMMAND_HEADER.Reserved[16..63].
+ * PE_ENTRY calls the mapped image's AddressOfEntryPoint (_DllMainCRTStartup
+ * for an MSVC DLL). Export modes select the payload entry used by Phase 8. */
+
+#define AMGER_ENTRY_KIND_PE_ENTRY     0u
+#define AMGER_ENTRY_KIND_EXPORT_NAME  1u
+#define AMGER_ENTRY_KIND_ORDINAL      2u
+#define AMGER_ENTRY_NAME_LENGTH       32u
+#define AMGER_ENTRY_CONTROL_OFFSET    16u
+#define AMGER_RESULT_ZERO_BYTES       (AMGER_ENTRY_CONTROL_OFFSET - 4u)
+
 /* Payload bytes start immediately after the fixed header in the region. */
 
 #define AMGER_PAYLOAD_OFFSET AMGER_COMMAND_HEADER_SIZE
@@ -85,10 +96,13 @@
 #define AMGER_LOG_ID_INJECT_PROCESS   16u
 #define AMGER_LOG_ID_INJECT_MAPPING   17u
 #define AMGER_LOG_ID_INJECT_THREAD    18u
+#define AMGER_LOG_ID_ENTRY            19u
 
 /* Reserved[0..3] is the seqlock; Reserved[8..15] carries a 64-bit result
  * value written by the driver (e.g. the injected module base). The four
- * bytes before it are alignment padding. */
+ * bytes before it are alignment padding. Reserved[16..63] is the R13 entry
+ * control — AMGER_RESULT_CONTROL.Remainder overlaps it but is never written;
+ * only ResultValue at [8..15] is used. */
 
 typedef struct _AMGER_RESULT_CONTROL {
     uint32_t Sequence;
@@ -312,6 +326,53 @@ typedef struct _AMGER_DEP_REPORT {
 
 #define AMGER_INIT_BUILD_ID           9u
 
+/* Phase 7 publishes only measured outcomes from entry resolution, the CRT
+ * call and the header erase. No stealth or loader-lock claim is a field. */
+
+#define AMGER_ENTRY_FLAG_RESOLVED     0x00000001u
+#define AMGER_ENTRY_FLAG_CALLED       0x00000002u
+#define AMGER_ENTRY_FLAG_WIPED        0x00000004u
+#define AMGER_ENTRY_FLAG_REVERTED     0x00000008u
+/* The CRT entry ran (completion marker set) but returned FALSE. A payload's
+ * DllMain may intentionally refuse process attach under manual mapping; that
+ * is a measured result, not an engine failure. Never call the CRT again: it
+ * already performed its own detach unwind. */
+
+#define AMGER_ENTRY_FLAG_CRT_FALSE    0x00000010u
+
+#define AMGER_ENTRY_STAGE_NONE        0u
+#define AMGER_ENTRY_STAGE_PARAMETERS  1u
+#define AMGER_ENTRY_STAGE_PROCESS     2u
+#define AMGER_ENTRY_STAGE_ENTRY_RVA   3u
+#define AMGER_ENTRY_STAGE_EXPORT      4u
+#define AMGER_ENTRY_STAGE_FORWARD     5u
+#define AMGER_ENTRY_STAGE_CALL        6u
+#define AMGER_ENTRY_STAGE_WIPE        7u
+#define AMGER_ENTRY_STAGE_VERIFY      8u
+
+typedef struct _AMGER_ENTRY_REPORT {
+    uint32_t BuildId;
+    uint32_t Status;
+    uint32_t FailureStage;
+    uint32_t Flags;
+    uint32_t EntryKind;
+    uint32_t EntryRva;
+    uint32_t EntryOrdinal;
+    uint32_t Forwarded;
+    uint32_t EntryResult;
+    uint32_t BytesWiped;
+    uint32_t HeaderSignatureZeroVerified;
+    uint32_t ApcRuns;
+    uint32_t ApcFailures;
+    uint32_t ApcStubStarted;
+    uint32_t ApcCompletionValue;
+    uint64_t RemoteBase;
+    uint64_t EntryAddress;
+    char     EntryName[AMGER_ENTRY_NAME_LENGTH];
+} AMGER_ENTRY_REPORT, * PAMGER_ENTRY_REPORT;
+
+#define AMGER_ENTRY_BUILD_ID          10u
+
 typedef struct _AMGER_INIT_REPORT {
     uint32_t BuildId;
     uint32_t Status;
@@ -395,6 +456,7 @@ typedef struct _AMGER_PARSER_REPORT {
     AMGER_IMPORT_REPORT Imports;
     AMGER_DEP_REPORT Dependencies;
     AMGER_INIT_REPORT Initialization;
+    AMGER_ENTRY_REPORT Entry;
     char ImportNames[AMGER_REPORT_MAX_MODULES][AMGER_REPORT_NAME_LENGTH];
     char ExportNames[AMGER_REPORT_MAX_MODULES][AMGER_REPORT_NAME_LENGTH];
 } AMGER_PARSER_REPORT, * PAMGER_PARSER_REPORT;
@@ -445,7 +507,8 @@ typedef struct _AMGER_PARSER_REPORT {
     X(AMGER_LOG_ID_PAYLOAD_IMAGE,    PAYLOAD_IMAGE)                  \
     X(AMGER_LOG_ID_INJECT_PROCESS,   INJECT_PROCESS)                 \
     X(AMGER_LOG_ID_INJECT_MAPPING,   INJECT_MAPPING)                 \
-    X(AMGER_LOG_ID_INJECT_THREAD,    INJECT_THREAD)
+    X(AMGER_LOG_ID_INJECT_THREAD,    INJECT_THREAD)                  \
+    X(AMGER_LOG_ID_ENTRY,            ENTRY)
 
 /* Maximum payload capacity reserved by the protocol for future work. */
 
@@ -601,6 +664,16 @@ typedef struct _AMGER_HEADER_CONTROL {
     uint8_t  Remainder[60];
 } AMGER_HEADER_CONTROL, * PAMGER_HEADER_CONTROL;
 
+/* R13 selection occupies Reserved[16..63]; [0..3] is the seqlock and
+ * [8..15] the result value, so the two overlays cannot collide. */
+
+typedef struct _AMGER_ENTRY_CONTROL {
+    uint32_t EntryKind;
+    uint32_t EntryOrdinal;
+    char     EntryName[AMGER_ENTRY_NAME_LENGTH];
+    uint8_t  Reserved[8];
+} AMGER_ENTRY_CONTROL, * PAMGER_ENTRY_CONTROL;
+
 /* One dispatcher log record. Sequence is absolute so the client can display
  * only entries newer than the last one it saw. */
 
@@ -632,6 +705,9 @@ typedef struct _AMGER_COMMAND_SNAPSHOT {
     uint32_t TargetProcessId;
     uint32_t Options;
     uint64_t CompletionEventHandle;
+    uint32_t EntryKind;
+    uint32_t EntryOrdinal;
+    char     EntryName[AMGER_ENTRY_NAME_LENGTH];
 } AMGER_COMMAND_SNAPSHOT, * PAMGER_COMMAND_SNAPSHOT;
 
 /*
@@ -657,6 +733,10 @@ AMGER_STATIC_ASSERT(sizeof(AMGER_COMMAND_HEADER) == 128,
                     "AMGER_COMMAND_HEADER must be 128 bytes");
 AMGER_STATIC_ASSERT(sizeof(AMGER_HEADER_CONTROL) == 64,
                     "AMGER_HEADER_CONTROL must cover Reserved exactly");
+AMGER_STATIC_ASSERT(sizeof(AMGER_ENTRY_CONTROL) == 48,
+                    "AMGER_ENTRY_CONTROL must fit Reserved[16..63]");
+AMGER_STATIC_ASSERT(AMGER_RESULT_ZERO_BYTES == (4u + 8u),
+                    "result zero region must cover only padding + result slot");
 AMGER_STATIC_ASSERT(sizeof(AMGER_RESULT_CONTROL) == 64,
                     "AMGER_RESULT_CONTROL must cover Reserved exactly");
 AMGER_STATIC_ASSERT(sizeof(AMGER_PARSER_REPORT) <= AMGER_REPORT_AREA_SIZE,
