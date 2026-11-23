@@ -39,6 +39,9 @@
 
 #define AMGER_TLS_INDEX_MAX       (AMGER_PAGE_SIZE_4K / sizeof(uint64_t))
 
+#define AMGER_R25_RING            32u
+#define AMGER_R25_MAX_PAGES       16u
+
 #define AMGER_LC_SECURITY_COOKIE  0x058u
 #define AMGER_LC_GUARD_CHECK      0x070u
 #define AMGER_LC_GUARD_FLAGS      0x090u
@@ -68,6 +71,18 @@ NTKERNELAPI NTSTATUS ZwProtectVirtualMemory(
     HANDLE ProcessHandle, PVOID* BaseAddress, PSIZE_T RegionSize,
     ULONG NewProtect, PULONG OldProtect);
 NTKERNELAPI BOOLEAN KeTestAlertThread(KPROCESSOR_MODE AlertMode);
+NTKERNELAPI HANDLE PsGetThreadProcessId(PETHREAD Thread);
+
+/* R25: a system-wide thread-notify callback. Its only safe job is enqueueing
+ * an event and arming a passive-level work item; every user-memory access,
+ * TLS-slot install and user-APC queue happens in that work item. */
+
+typedef VOID (*AMGER_THREAD_NOTIFY_ROUTINE)(
+    HANDLE ProcessId, HANDLE ThreadId, BOOLEAN Create);
+NTKERNELAPI NTSTATUS PsSetCreateThreadNotifyRoutine(
+    AMGER_THREAD_NOTIFY_ROUTINE Routine);
+NTKERNELAPI NTSTATUS PsRemoveCreateThreadNotifyRoutine(
+    AMGER_THREAD_NOTIFY_ROUTINE Routine);
 
 typedef VOID (*AMGER_KERNEL_APC_ROUTINE)(
     struct _KAPC* Apc, PVOID* NormalRoutine, PVOID* NormalContext,
@@ -173,6 +188,40 @@ static AMGER_RUNTIME_STATE g_state;
  * held by an in-flight initialization. */
 
 static volatile long g_initBusy = 0L;
+
+typedef struct _AMGER_R25_EVENT {
+    HANDLE ProcessId;
+    HANDLE ThreadId;
+    BOOLEAN Create;
+} AMGER_R25_EVENT, * PAMGER_R25_EVENT;
+
+typedef struct _AMGER_R25_STATE {
+    volatile long Enabled;
+    volatile long Gate;
+    HANDLE ProcessId;
+    PEPROCESS Process;
+    AMGER_R25_EVENT Ring[AMGER_R25_RING];
+    volatile long Head;
+    volatile long Tail;
+    WORK_QUEUE_ITEM WorkItem;
+    BOOLEAN WorkItemReady;
+    volatile long PendingApcs;
+    uint64_t Codes[AMGER_R25_MAX_PAGES];
+    uint64_t Datas[AMGER_R25_MAX_PAGES];
+    uint64_t Blocks[AMGER_R25_MAX_PAGES];
+    uint64_t Arrays[AMGER_R25_MAX_PAGES];
+    uint64_t Tebs[AMGER_R25_MAX_PAGES];
+    HANDLE Tids[AMGER_R25_MAX_PAGES];
+    uint32_t PageCount;
+    volatile long CreateSeen;
+    volatile long DeleteSeen;
+    volatile long Dropped;
+    volatile long AttachQueued;
+    volatile long AttachFailed;
+    volatile long DetachObserved;
+} AMGER_R25_STATE, * PAMGER_R25_STATE;
+
+static AMGER_R25_STATE g_r25;
 
 static NTSTATUS AllocatePrivatePage(PAMGER_RUNTIME_STATE state,
                                     uint64_t* out, ULONG protect);
@@ -413,25 +462,181 @@ static NTSTATUS InitCookie(PAMGER_RUNTIME_STATE state) {
     return STATUS_SUCCESS;
 }
 
-static NTSTATUS DetectActivation(PAMGER_RUNTIME_STATE state) {
-    AMGER_PE_DIRECTORY resource = state->Image->Directories[AMGER_DIRECTORY_RESOURCE];
+/* The loader creates an activation context for an ID-1/ID-2 RT_MANIFEST only
+ * inside LoadLibrary, and stores it in the loader data entry. A manual map has
+ * neither, and Phase 4 resolves imports without SxS binding, so activating a
+ * manifest here would neither affect resolution nor reach the entry thread.
+ * R6 is therefore implemented as a measured, bounded inventory of the actual
+ * resource tree: presence, manifest ID, byte count and a content hash. No user
+ * API is called and no target state is changed. */
+
+static uint16_t ReadLe16Kernel(const UCHAR* bytes) {
+    return (uint16_t)((uint16_t)bytes[0u] | ((uint16_t)bytes[1u] << 8u));
+}
+
+static uint32_t ReadLe32Kernel(const UCHAR* bytes) {
+    return (uint32_t)bytes[0u] | ((uint32_t)bytes[1u] << 8u) |
+           ((uint32_t)bytes[2u] << 16u) | ((uint32_t)bytes[3u] << 24u);
+}
+
+static uint32_t HashKernelBytes(const UCHAR* bytes, uint32_t length) {
+    uint32_t hash = 2166136261u;
+    uint32_t i;
+
+    for (i = 0u; i < length; ++i) {
+        hash ^= bytes[i];
+        hash *= 16777619u;
+    }
+    return hash;
+}
+
+/* Reads one resource directory header. Every read goes through PeRvaToOffset
+ * so no kernel dereference ever targets an unverified file offset. */
+
+static BOOLEAN ReadResourceHeader(PAMGER_RUNTIME_STATE state, uint32_t rva,
+                                  uint32_t* named, uint32_t* ids) {
+    UCHAR header[16];
     uint32_t offset;
 
-    state->Report->Flags |= AMGER_INIT_FLAG_ACTIVATION;
+    if (!NT_SUCCESS(PeRvaToOffset(state->Image, rva, 16u, &offset))) {
+        return FALSE;
+    }
+    RtlCopyMemory(header, state->Image->Base + offset, sizeof(header));
+    *named = ReadLe16Kernel(header + 12u);
+    *ids = ReadLe16Kernel(header + 14u);
+    return TRUE;
+}
 
-    /* Measured result for the shipped payload: no resource directory means no
-     * embedded manifest to activate. A present directory is reported as such;
-     * this phase does not fabricate an activation context from raw XML. */
+/* Finds a resource entry by numeric ID and returns its raw OffsetToData field. */
+
+static BOOLEAN FindResourceId(PAMGER_RUNTIME_STATE state, uint32_t directoryRva,
+                              uint32_t wantedId, uint32_t* dataField) {
+    uint32_t named = 0u;
+    uint32_t ids = 0u;
+    uint32_t i;
+    uint32_t offset;
+    UCHAR entry[8];
+
+    if (!ReadResourceHeader(state, directoryRva, &named, &ids)) {
+        return FALSE;
+    }
+    for (i = 0u; i < named + ids && i < 64u; ++i) {
+        if (!NT_SUCCESS(PeRvaToOffset(state->Image,
+                                      directoryRva + 16u + (i * 8u),
+                                      8u, &offset))) {
+            return FALSE;
+        }
+        RtlCopyMemory(entry, state->Image->Base + offset, sizeof(entry));
+        if (ReadLe32Kernel(entry) == wantedId) {
+            *dataField = ReadLe32Kernel(entry + 4u);
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+/* Returns the first ID-named child of a directory with its numeric ID. */
+
+static BOOLEAN FindFirstResourceChild(PAMGER_RUNTIME_STATE state,
+                                      uint32_t directoryRva, uint32_t* id,
+                                      uint32_t* dataField) {
+    uint32_t named = 0u;
+    uint32_t ids = 0u;
+    uint32_t i;
+    uint32_t offset;
+    UCHAR entry[8];
+    uint32_t value;
+
+    if (!ReadResourceHeader(state, directoryRva, &named, &ids)) {
+        return FALSE;
+    }
+    for (i = 0u; i < named + ids && i < 64u; ++i) {
+        if (!NT_SUCCESS(PeRvaToOffset(state->Image,
+                                      directoryRva + 16u + (i * 8u),
+                                      8u, &offset))) {
+            return FALSE;
+        }
+        RtlCopyMemory(entry, state->Image->Base + offset, sizeof(entry));
+        value = ReadLe32Kernel(entry);
+        if ((value & 0x80000000u) == 0u) {
+            *id = value;
+            *dataField = ReadLe32Kernel(entry + 4u);
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+static NTSTATUS DetectActivation(PAMGER_RUNTIME_STATE state) {
+    AMGER_PE_DIRECTORY resource =
+        state->Image->Directories[AMGER_DIRECTORY_RESOURCE];
+    uint32_t typeField = 0u;
+    uint32_t nameField = 0u;
+    uint32_t langField = 0u;
+    uint32_t manifestId = 0u;
+    uint32_t dataRva;
+    uint32_t offset = 0u;
+    uint32_t manifestRva;
+    uint32_t manifestSize;
+    UCHAR dataEntry[16];
+
+    state->Report->ActivationStatus = (uint32_t)STATUS_NOT_FOUND;
+    state->Report->ManifestState = AMGER_MANIFEST_ABSENT;
+    state->Report->ManifestId = 0u;
+    state->Report->ManifestBytes = 0u;
+    state->Report->ManifestHash = 0u;
 
     if (resource.Rva == 0u || resource.Size == 0u) {
-        state->Report->ActivationStatus = (uint32_t)STATUS_NOT_FOUND;
         return STATUS_SUCCESS;
     }
-    if (!NT_SUCCESS(PeRvaToOffset(state->Image, resource.Rva, 16u, &offset))) {
+    if (!FindResourceId(state, resource.Rva, 24u, &typeField) ||
+        (typeField & 0x80000000u) == 0u) {
+        return STATUS_SUCCESS;
+    }
+    if (!FindFirstResourceChild(state,
+                                resource.Rva + (typeField & 0x7FFFFFFFu),
+                                &manifestId, &nameField) ||
+        (nameField & 0x80000000u) == 0u) {
+        state->Report->ManifestState = AMGER_MANIFEST_MALFORMED;
         state->Report->ActivationStatus = (uint32_t)STATUS_INVALID_PARAMETER;
         return STATUS_SUCCESS;
     }
-    state->Report->ActivationStatus = (uint32_t)STATUS_NOT_IMPLEMENTED;
+    if (!FindFirstResourceChild(state,
+                                resource.Rva + (nameField & 0x7FFFFFFFu),
+                                &manifestId, &langField) ||
+        (langField & 0x80000000u) != 0u) {
+        state->Report->ManifestState = AMGER_MANIFEST_MALFORMED;
+        state->Report->ActivationStatus = (uint32_t)STATUS_INVALID_PARAMETER;
+        return STATUS_SUCCESS;
+    }
+    dataRva = resource.Rva + langField;
+    if (!NT_SUCCESS(PeRvaToOffset(state->Image, dataRva, 16u, &offset))) {
+        state->Report->ManifestState = AMGER_MANIFEST_MALFORMED;
+        state->Report->ActivationStatus = (uint32_t)STATUS_INVALID_PARAMETER;
+        return STATUS_SUCCESS;
+    }
+    RtlCopyMemory(dataEntry, state->Image->Base + offset, sizeof(dataEntry));
+    manifestRva = ReadLe32Kernel(dataEntry);
+    manifestSize = ReadLe32Kernel(dataEntry + 4u);
+    if (manifestSize == 0u || manifestSize > 0x100000u ||
+        manifestRva == 0u ||
+        !NT_SUCCESS(PeRvaToOffset(state->Image, manifestRva,
+                                  manifestSize, &offset))) {
+        state->Report->ManifestBytes = manifestSize;
+        state->Report->ManifestState = AMGER_MANIFEST_MALFORMED;
+        state->Report->ActivationStatus = (uint32_t)STATUS_INVALID_PARAMETER;
+        return STATUS_SUCCESS;
+    }
+    state->Report->ManifestId = manifestId;
+    state->Report->ManifestBytes = manifestSize;
+    state->Report->ManifestHash =
+        HashKernelBytes(state->Image->Base + offset, manifestSize);
+    state->Report->ManifestState =
+        manifestId == 1u ? AMGER_MANIFEST_ID1 :
+        manifestId == 2u ? AMGER_MANIFEST_ID2 :
+        manifestId == 3u ? AMGER_MANIFEST_ID3 : AMGER_MANIFEST_OTHER;
+    state->Report->ActivationStatus = (uint32_t)STATUS_NOT_SUPPORTED;
+    state->Report->Flags |= AMGER_INIT_FLAG_ACTIVATION;
     return STATUS_SUCCESS;
 }
 
@@ -1593,21 +1798,303 @@ static NTSTATUS RetargetCfg(PAMGER_RUNTIME_STATE state) {
 }
 
 /* ------------------------------------------------------------------ */
-/* R25 - durable thread TLS (new-thread callbacks remain deferred)      */
+/* R25 - durable thread TLS and new-thread callbacks                    */
 /* ------------------------------------------------------------------ */
 
-/* A system-wide PsSetCreateThreadNotifyRoutine callback runs under the
- * creating thread's loader lock and must not perform user-mode MDL copies or
- * queue a user APC to a thread whose user context is not yet live. That path
- * produced a DPC-stack double fault (bugcheck 0x7f) in testing, so it is not
- * registered. The durable part of thread TLS - assigning every current
- * thread's ThreadLocalStoragePointer slot - is already done by
- * PatchThreadSlots. Firing DLL_THREAD_ATTACH callbacks for payload-created
- * threads is deferred until a safe dispatch-time mechanism exists. */
+/* The durable part of thread TLS is PatchThreadSlots. New-thread callbacks
+ * need lifecycle notification. The notify callback is deliberately tiny: it
+ * can arrive at APC_LEVEL in the creating thread's loader lock, so it only
+ * enqueues an event and arms a passive-level work item. Every user-memory
+ * access, TLS-slot install and user-APC queue happens in that work item. This
+ * removes the deep chain and large stack frames that caused the earlier 0x7f.
+ * DETACH cannot be delivered to an exiting thread by a user APC; delete events
+ * are counted only, never reported as callbacks fired. */
+
+static VOID AmgerThreadNotify(HANDLE processId, HANDLE threadId,
+                              BOOLEAN create) {
+    long index;
+
+    if (InterlockedCompareExchange(&g_r25.Enabled, 0L, 0L) == 0L ||
+        processId != g_r25.ProcessId) {
+        return;
+    }
+    index = InterlockedIncrement(&g_r25.Head) - 1L;
+    if ((ULONG)(index - g_r25.Tail) >= AMGER_R25_RING) {
+        (void)InterlockedIncrement(&g_r25.Dropped);
+        return;
+    }
+    g_r25.Ring[(ULONG)index % AMGER_R25_RING].ProcessId = processId;
+    g_r25.Ring[(ULONG)index % AMGER_R25_RING].ThreadId = threadId;
+    g_r25.Ring[(ULONG)index % AMGER_R25_RING].Create = create;
+    if (create) {
+        (void)InterlockedIncrement(&g_r25.CreateSeen);
+    } else {
+        (void)InterlockedIncrement(&g_r25.DeleteSeen);
+    }
+    if (InterlockedCompareExchange(&g_r25.Gate, 1L, 0L) == 0L) {
+        /* No device object is available in this phase; the work item is a
+         * static, driver-lifetime structure, so ExQueueWorkItem is sufficient. */
+#pragma warning(suppress : 28159)
+        ExQueueWorkItem(&g_r25.WorkItem, DelayedWorkQueue);
+    }
+}
+
+static VOID AmgerR25ApcKernelRoutine(struct _KAPC* apc,
+                                     PVOID* normalRoutine,
+                                     PVOID* normalContext,
+                                     PVOID* argument1, PVOID* argument2) {
+    UNREFERENCED_PARAMETER(normalRoutine);
+    UNREFERENCED_PARAMETER(normalContext);
+    UNREFERENCED_PARAMETER(argument1);
+    UNREFERENCED_PARAMETER(argument2);
+    (void)InterlockedDecrement(&g_r25.PendingApcs);
+    ExFreePool(apc);
+}
+
+static VOID AmgerR25ApcRundownRoutine(struct _KAPC* apc) {
+    (void)InterlockedDecrement(&g_r25.PendingApcs);
+    ExFreePool(apc);
+}
+
+/* Installs a private TLS block in one new thread and queues the payload's
+ * DLL_THREAD_ATTACH callbacks to it. Runs only from the passive work item. */
+
+static BOOLEAN PromoteR25CodePage(PEPROCESS process, uint64_t page) {
+    KAPC_STATE apc;
+    PVOID base = (PVOID)(uintptr_t)page;
+    SIZE_T size = AMGER_PAGE_SIZE_4K;
+    ULONG old = 0u;
+    NTSTATUS status;
+
+    KeStackAttachProcess((PRKPROCESS)process, &apc);
+    status = ZwProtectVirtualMemory(ZwCurrentProcess(), &base, &size,
+                                    PAGE_EXECUTE_READ, &old);
+    KeUnstackDetachProcess(&apc);
+    return NT_SUCCESS(status);
+}
+
+static VOID AmgerR25AttachThread(HANDLE threadId) {
+    AMGER_RUNTIME_STATE scratch;
+    PETHREAD thread = NULL;
+    PVOID teb = NULL;
+    uint64_t array = 0u;
+    uint64_t block = 0u;
+    uint64_t codePage = 0u;
+    uint64_t dataPage = 0u;
+    uint64_t address;
+    uint32_t count = 0u;
+    uint32_t i;
+    uint32_t zero = 0u;
+    UCHAR code[AMGER_STUB_MAX];
+    AMGER_JOB jobs[AMGER_MAX_JOBS];
+    PRKAPC apc;
+    KAPC_STATE apcState;
+
+    if (!NT_SUCCESS(PsLookupThreadByThreadId(threadId, &thread))) {
+        (void)InterlockedIncrement(&g_r25.AttachFailed);
+        return;
+    }
+    if (PsGetThreadProcessId(thread) != g_r25.ProcessId) {
+        ObDereferenceObject(thread);
+        (void)InterlockedIncrement(&g_r25.AttachFailed);
+        return;
+    }
+    teb = PsGetThreadTeb(thread);
+    if (teb == NULL || g_state.TlsIndexValue >= AMGER_TLS_MINIMUM) {
+        ObDereferenceObject(thread);
+        (void)InterlockedIncrement(&g_r25.AttachFailed);
+        return;
+    }
+    RtlZeroMemory(&scratch, sizeof(scratch));
+    scratch.Process = g_r25.Process;
+    if (!NT_SUCCESS(AllocatePrivatePage(&scratch, &block, PAGE_READWRITE)) ||
+        !NT_SUCCESS(AllocatePrivatePage(&scratch, &codePage, PAGE_READWRITE)) ||
+        !NT_SUCCESS(AllocatePrivatePage(&scratch, &dataPage, PAGE_READWRITE))) {
+        ReleasePrivatePage(&scratch, &block);
+        ReleasePrivatePage(&scratch, &codePage);
+        ReleasePrivatePage(&scratch, &dataPage);
+        ObDereferenceObject(thread);
+        (void)InterlockedIncrement(&g_r25.AttachFailed);
+        return;
+    }
+    KeStackAttachProcess((PRKPROCESS)g_r25.Process, &apcState);
+    array = 0u;
+    (void)UserRead(g_r25.Process, (uint64_t)(uintptr_t)teb +
+                   AMGER_TEB_TLS_POINTER, &array, sizeof(array));
+    if (array != 0u && g_state.TlsTemplate != NULL &&
+        UserWrite(g_r25.Process, block, g_state.TlsTemplate,
+                  g_state.TlsRawBytes) &&
+        UserWrite(g_r25.Process, array +
+                  ((uint64_t)g_state.TlsIndexValue * 8u),
+                  &block, sizeof(block))) {
+        RtlZeroMemory(jobs, sizeof(jobs));
+        for (i = 0u; i < g_state.TlsCallbackCount &&
+                      count < AMGER_MAX_JOBS; ++i) {
+            jobs[count].Function = g_state.TlsCallbacks[i];
+            jobs[count].Arg1 = g_state.RemoteBase;
+            jobs[count].Arg2 = 2u; /* DLL_THREAD_ATTACH */
+            jobs[count].Arg3 = 0u;
+            ++count;
+        }
+        if (count != 0u) {
+            (void)UserWrite(g_r25.Process, dataPage, &count, sizeof(count));
+            (void)UserWrite(g_r25.Process, dataPage + 8u, jobs,
+                            count * sizeof(AMGER_JOB));
+            address = dataPage + AMGER_COMPLETION_OFF;
+            (void)UserWrite(g_r25.Process, address, &zero, sizeof(zero));
+            EmitStub(code, dataPage, count);
+            (void)UserWrite(g_r25.Process, codePage, code,
+                            (uint32_t)(21u + (65u * count) + 22u));
+        }
+    } else {
+        array = 0u;
+    }
+    KeUnstackDetachProcess(&apcState);
+
+    if (array == 0u || count == 0u ||
+        !PromoteR25CodePage(g_r25.Process, codePage)) {
+        ReleasePrivatePage(&scratch, &block);
+        ReleasePrivatePage(&scratch, &codePage);
+        ReleasePrivatePage(&scratch, &dataPage);
+        ObDereferenceObject(thread);
+        (void)InterlockedIncrement(&g_r25.AttachFailed);
+        return;
+    }
+    if (g_r25.PageCount < AMGER_R25_MAX_PAGES) {
+        g_r25.Codes[g_r25.PageCount] = codePage;
+        g_r25.Datas[g_r25.PageCount] = dataPage;
+        g_r25.Blocks[g_r25.PageCount] = block;
+        g_r25.Arrays[g_r25.PageCount] = array;
+        g_r25.Tebs[g_r25.PageCount] = (uint64_t)(uintptr_t)teb;
+        g_r25.Tids[g_r25.PageCount] = threadId;
+        ++g_r25.PageCount;
+    } else {
+        zero = 0u;
+        (void)UserWrite(g_r25.Process, array +
+                        ((uint64_t)g_state.TlsIndexValue * 8u),
+                        &zero, sizeof(zero));
+        ReleasePrivatePage(&scratch, &block);
+        ReleasePrivatePage(&scratch, &codePage);
+        ReleasePrivatePage(&scratch, &dataPage);
+        ObDereferenceObject(thread);
+        (void)InterlockedIncrement(&g_r25.AttachFailed);
+        return;
+    }
+#pragma warning(suppress : 4996 28197)
+    apc = (PRKAPC)ExAllocatePoolWithTag(NonPagedPoolNx, sizeof(KAPC), 'grmP');
+    if (apc == NULL) {
+        (void)InterlockedIncrement(&g_r25.AttachFailed);
+        ObDereferenceObject(thread);
+        return;
+    }
+    KeInitializeApc(apc, (PRKTHREAD)thread, AmgerOriginalApcEnvironment,
+                    AmgerR25ApcKernelRoutine, AmgerR25ApcRundownRoutine,
+                    (AMGER_NORMAL_ROUTINE)(uintptr_t)codePage,
+                    UserMode, (PVOID)(uintptr_t)dataPage);
+    (void)InterlockedIncrement(&g_r25.PendingApcs);
+    if (KeInsertQueueApc(apc, NULL, NULL, 0)) {
+        (void)QueueAlertBooster(thread);
+        (void)InterlockedIncrement(&g_r25.AttachQueued);
+    } else {
+        (void)InterlockedDecrement(&g_r25.PendingApcs);
+        ExFreePoolWithTag(apc, 'grmP');
+        (void)InterlockedIncrement(&g_r25.AttachFailed);
+    }
+    ObDereferenceObject(thread);
+}
+
+WORKER_THREAD_ROUTINE AmgerTlsWorkItem;
+
+VOID AmgerTlsWorkItem(PVOID context) {
+    AMGER_R25_EVENT event;
+
+    UNREFERENCED_PARAMETER(context);
+    while (g_r25.Tail != g_r25.Head) {
+        event = g_r25.Ring[(ULONG)g_r25.Tail % AMGER_R25_RING];
+        (void)InterlockedIncrement(&g_r25.Tail);
+        if (event.Create) {
+            AmgerR25AttachThread(event.ThreadId);
+        } else {
+            (void)InterlockedIncrement(&g_r25.DetachObserved);
+        }
+    }
+    (void)InterlockedExchange(&g_r25.Gate, 0L);
+    if (g_r25.Tail != g_r25.Head &&
+        InterlockedCompareExchange(&g_r25.Gate, 1L, 0L) == 0L) {
+#pragma warning(suppress : 28159)
+        ExQueueWorkItem(&g_r25.WorkItem, DelayedWorkQueue);
+    }
+}
+
+static NTSTATUS RegisterThreadTlsNotify(PAMGER_RUNTIME_STATE state) {
+    NTSTATUS status;
+
+    RtlZeroMemory(&g_r25, sizeof(g_r25));
+    g_r25.ProcessId = state->ProcessId;
+    g_r25.Process = state->Process;
+    ObReferenceObject(g_r25.Process);
+    ExInitializeWorkItem(&g_r25.WorkItem, AmgerTlsWorkItem, NULL);
+    g_r25.WorkItemReady = TRUE;
+    status = PsSetCreateThreadNotifyRoutine(AmgerThreadNotify);
+    if (!NT_SUCCESS(status)) {
+        ObDereferenceObject(g_r25.Process);
+        g_r25.Process = NULL;
+        return Fail(state, AMGER_INIT_STAGE_THREAD_TLS, status);
+    }
+    (void)InterlockedExchange(&g_r25.Enabled, 1L);
+    state->Report->ThreadNotifyStatus = (uint32_t)STATUS_SUCCESS;
+    state->Report->Flags |= AMGER_INIT_FLAG_THREAD_NOTIFY;
+    return STATUS_SUCCESS;
+}
+
+static VOID UnregisterThreadTlsNotify(VOID) {
+    AMGER_RUNTIME_STATE scratch;
+    LARGE_INTEGER interval;
+    uint32_t i;
+    uint64_t zero = 0u;
+
+    if (g_r25.Enabled == 0L && g_r25.Process == NULL) {
+        return;
+    }
+    (void)InterlockedExchange(&g_r25.Enabled, 0L);
+    (void)PsRemoveCreateThreadNotifyRoutine(AmgerThreadNotify);
+    interval.QuadPart = -10000LL;
+    for (i = 0u; i < 200u && g_r25.Gate != 0L; ++i) {
+        (void)KeDelayExecutionThread(KernelMode, FALSE, &interval);
+    }
+    if (g_r25.Gate != 0L) {
+        /* A work item is still using the process, TLS template and pages.
+         * Leave the references and allocations in place rather than freeing
+         * memory it is about to touch. */
+        return;
+    }
+    RtlZeroMemory(&scratch, sizeof(scratch));
+    scratch.Process = g_r25.Process;
+    for (i = 0u; i < g_r25.PageCount; ++i) {
+        if (g_r25.Arrays[i] != 0u) {
+            (void)UserWrite(g_r25.Process, g_r25.Arrays[i] +
+                            ((uint64_t)g_state.TlsIndexValue * 8u),
+                            &zero, sizeof(zero));
+        }
+        ReleasePrivatePage(&scratch, &g_r25.Blocks[i]);
+        if (g_r25.PendingApcs == 0L) {
+            ReleasePrivatePage(&scratch, &g_r25.Codes[i]);
+            ReleasePrivatePage(&scratch, &g_r25.Datas[i]);
+        }
+    }
+    ObDereferenceObject(g_r25.Process);
+    RtlZeroMemory(&g_r25, sizeof(g_r25));
+}
 
 static NTSTATUS RegisterThreadTls(PAMGER_RUNTIME_STATE state) {
+    NTSTATUS status;
+
     if (state->ThreadsPatched == 0u) {
         return Fail(state, AMGER_INIT_STAGE_THREAD_TLS, STATUS_NOT_FOUND);
+    }
+    status = RegisterThreadTlsNotify(state);
+    if (!NT_SUCCESS(status)) {
+        return status;
     }
     state->Report->Flags |= AMGER_INIT_FLAG_THREAD_TLS;
     return STATUS_SUCCESS;
@@ -1793,6 +2280,18 @@ NTSTATUS InitializePhase(const AMGER_INIT_CONTEXT* context) {
     if (!NT_SUCCESS(status)) goto failure;
 
     state->Report->ThreadCallbacksFired = state->ThreadCallbacks;
+    state->Report->ThreadCreateSeen =
+        (uint32_t)InterlockedCompareExchange(&g_r25.CreateSeen, 0L, 0L);
+    state->Report->ThreadDeleteSeen =
+        (uint32_t)InterlockedCompareExchange(&g_r25.DeleteSeen, 0L, 0L);
+    state->Report->ThreadEventsDropped =
+        (uint32_t)InterlockedCompareExchange(&g_r25.Dropped, 0L, 0L);
+    state->Report->ThreadAttachQueued =
+        (uint32_t)InterlockedCompareExchange(&g_r25.AttachQueued, 0L, 0L);
+    state->Report->ThreadAttachFailed =
+        (uint32_t)InterlockedCompareExchange(&g_r25.AttachFailed, 0L, 0L);
+    state->Report->ThreadDetachObserved =
+        (uint32_t)InterlockedCompareExchange(&g_r25.DetachObserved, 0L, 0L);
     state->Report->Status = (uint32_t)STATUS_SUCCESS;
     return STATUS_SUCCESS;
 
@@ -1822,6 +2321,7 @@ VOID InitializeRevert(const AMGER_INIT_CONTEXT* context) {
         (void)WriteProtectedCode(state, state->HookFunction,
                                  state->Original, sizeof(state->Original));
     }
+    UnregisterThreadTlsNotify();
 
     RtlZeroMemory(bits, sizeof(bits));
     if (state->TlsIndexAllocated && state->TlsBitsAddress != 0u &&

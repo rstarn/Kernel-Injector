@@ -282,6 +282,7 @@ typedef struct _AMGER_DEP_REPORT {
 #define AMGER_INIT_FLAG_PDATA        0x00000080u
 #define AMGER_INIT_FLAG_CFG          0x00000100u
 #define AMGER_INIT_FLAG_REVERTED     0x00000200u
+#define AMGER_INIT_FLAG_THREAD_NOTIFY 0x00000400u
 
 #define AMGER_INIT_STAGE_NONE        0u
 #define AMGER_INIT_STAGE_PARAMETERS  1u
@@ -298,7 +299,18 @@ typedef struct _AMGER_DEP_REPORT {
 #define AMGER_INIT_STAGE_CFG         12u
 #define AMGER_INIT_STAGE_APC         13u
 
-#define AMGER_INIT_BUILD_ID           7u
+/* R6 measured manifest states. No activation context is created: the mapper
+ * resolves imports in Phase 4 without SxS binding, and a manually mapped image
+ * has no loader data entry for the loader's LoadLibrary-time actctx. */
+
+#define AMGER_MANIFEST_ABSENT         0u
+#define AMGER_MANIFEST_ID1            1u
+#define AMGER_MANIFEST_ID2            2u
+#define AMGER_MANIFEST_ID3            3u
+#define AMGER_MANIFEST_OTHER          4u
+#define AMGER_MANIFEST_MALFORMED      5u
+
+#define AMGER_INIT_BUILD_ID           9u
 
 typedef struct _AMGER_INIT_REPORT {
     uint32_t BuildId;
@@ -333,6 +345,17 @@ typedef struct _AMGER_INIT_REPORT {
     uint32_t PdataTables;
     uint32_t PdataEntries;
     uint32_t ActivationStatus;
+    uint32_t ManifestState;
+    uint32_t ManifestId;
+    uint32_t ManifestBytes;
+    uint32_t ManifestHash;
+    uint32_t ThreadNotifyStatus;
+    uint32_t ThreadCreateSeen;
+    uint32_t ThreadDeleteSeen;
+    uint32_t ThreadEventsDropped;
+    uint32_t ThreadAttachQueued;
+    uint32_t ThreadAttachFailed;
+    uint32_t ThreadDetachObserved;
     uint64_t DetourAddress;
     uint64_t CfgCheckBefore;
     uint64_t CfgCheckAfter;
@@ -638,6 +661,8 @@ AMGER_STATIC_ASSERT(sizeof(AMGER_RESULT_CONTROL) == 64,
                     "AMGER_RESULT_CONTROL must cover Reserved exactly");
 AMGER_STATIC_ASSERT(sizeof(AMGER_PARSER_REPORT) <= AMGER_REPORT_AREA_SIZE,
                     "parser report must fit the report area");
+AMGER_STATIC_ASSERT(sizeof(AMGER_INIT_REPORT) <= sizeof(AMGER_PARSER_REPORT),
+                    "initialization report must fit the parser report");
 AMGER_STATIC_ASSERT(offsetof(AMGER_PARSER_REPORT, Signature) == 0u,
                     "parser report signature offset mismatch");
 AMGER_STATIC_ASSERT(sizeof(AMGER_SHARED_REGION_REQUEST) == 16,

@@ -851,14 +851,21 @@ void InjectScreen(Session& session) {
                        init.CookieRva, init.CookieLow);
             emit(L"  Security Cookie: ", reportLine,
                  (init.Flags & AMGER_INIT_FLAG_COOKIE) != 0u ? good : bad);
-            swprintf_s(reportLine, L"0x%08X", init.ActivationStatus);
-            /* STATUS_NOT_FOUND (0xC0000225) is the measured "no manifest"
-             * result for a payload without a resource directory: a valid
-             * outcome, not a failure. Everything else non-zero is an error. */
-
+            /* STATUS_NOT_FOUND means no manifest; STATUS_NOT_SUPPORTED means a
+             * manifest was measured but not activated: the mapper resolves
+             * imports in Phase 4 and has no loader data entry for the loader's
+             * LoadLibrary-time activation context. Only a malformed tree is an
+             * error. */
+            swprintf_s(reportLine,
+                       L"0x%08X | state=%u id=%u | %u bytes | hash 0x%08X",
+                       init.ActivationStatus, init.ManifestState,
+                       init.ManifestId, init.ManifestBytes, init.ManifestHash);
+            const bool activationOk =
+                init.ActivationStatus == 0u ||
+                init.ActivationStatus == 0xC0000225u ||
+                init.ActivationStatus == 0xC00000BBu;
             emit(L"  Activation Context: ", reportLine,
-                 (init.ActivationStatus == 0u ||
-                  init.ActivationStatus == 0xC0000225u) ? good : bad);
+                 activationOk ? good : bad);
             Console::WriteRaw(L"\n");
 
             swprintf_s(reportLine, L"%u", init.TlsCallbackCount);
@@ -886,8 +893,16 @@ void InjectScreen(Session& session) {
                            init.TlsThreadSkipMask, init.TlsSnapshotCount);
                 emit(L"  Thread Probe: ", reportLine, bad);
             }
-            swprintf_s(reportLine, L"%u", init.ThreadCallbacksFired);
-            emit(L"  Thread Callbacks: ", reportLine, good);
+            swprintf_s(reportLine, L"0x%08X | create=%u delete=%u dropped=%u",
+                       init.ThreadNotifyStatus, init.ThreadCreateSeen,
+                       init.ThreadDeleteSeen, init.ThreadEventsDropped);
+            emit(L"  Thread Notify: ", reportLine,
+                 (init.Flags & AMGER_INIT_FLAG_THREAD_NOTIFY) != 0u ? good : bad);
+            swprintf_s(reportLine, L"attach queued=%u failed=%u | detach observed=%u",
+                       init.ThreadAttachQueued, init.ThreadAttachFailed,
+                       init.ThreadDetachObserved);
+            emit(L"  Thread Callbacks: ", reportLine,
+                 init.ThreadAttachFailed == 0u ? good : bad);
             Console::WriteRaw(L"\n");
 
             swprintf_s(reportLine, L"%u / %u", init.RoutinesResolved,
