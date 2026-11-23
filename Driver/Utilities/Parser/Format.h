@@ -53,12 +53,14 @@ typedef struct _AMGER_PE_IMAGE {
 } AMGER_PE_IMAGE, * PAMGER_PE_IMAGE;
 
 /* Validates the image and fills Out. Never dereferences an unchecked offset. */
+
 NTSTATUS PeParseAndValidate(
     PVOID Image,
     SIZE_T ImageSize,
     PAMGER_PE_IMAGE Out);
 
 /* Maps an RVA range to a file offset. Fails when the range is not file-backed. */
+
 NTSTATUS PeRvaToOffset(
     const AMGER_PE_IMAGE* Image,
     uint32_t Rva,
@@ -67,6 +69,7 @@ NTSTATUS PeRvaToOffset(
 
 /* Best-effort extraction of the fields shown in the client console. Never
  * fails the injection: unknown or malformed tables are left empty. */
+
 VOID PeBuildReport(
     const AMGER_PE_IMAGE* Image,
     PAMGER_PARSER_REPORT Out);

@@ -10,7 +10,7 @@
  * API, no section object, no loader-list entry and no image-load callback.
  */
 
-#include "Graph.h"
+#include "Table/Graph.h"
 
 #define AMGER_POOL_TAG_RAW 0x22222222u  /* four quotes: neutral, printable */
 

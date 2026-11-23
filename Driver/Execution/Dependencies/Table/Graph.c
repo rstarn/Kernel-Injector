@@ -1,7 +1,7 @@
 #include "Graph.h"
-#include "Images.h"
-#include "../Imports/Lookup.h"
-#include "../Imports/Binding/Resolve.h"
+#include "../Images.h"
+#include "../../Imports/Lookup.h"
+#include "../../Imports/Binding/Resolve.h"
 
 /*
  * Rounds are bounded: map the modules the primary image is missing, rebind it,
@@ -264,6 +264,7 @@ NTSTATUS DependenciesResolve(
     initialResolved = primaryImports->FunctionsResolved;
 
     /* Measure the loader list before any dependency work. */
+
     status = LookupCountLoaderModules(processId, &out->LoaderEntriesBefore);
     if (!NT_SUCCESS(status)) {
         out->Status = (uint32_t)status;
@@ -274,6 +275,7 @@ NTSTATUS DependenciesResolve(
     /* The table embeds full PE descriptors and is far larger than the x64
      * kernel stack. Allocate both working structures from pool and release
      * them on every path. */
+
 #pragma warning(suppress : 4996)
     graph = (PAMGER_DEP_GRAPH)ExAllocatePoolWithTag(
         NonPagedPool, sizeof(*graph), AMGER_POOL_TAG_GRAPH);

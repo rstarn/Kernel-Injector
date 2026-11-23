@@ -66,7 +66,7 @@ void WriteColoredValue(const std::wstring& text, Console::Brush brush) {
                                character == L'|' || character == L'/' ||
                                character == L'[' || character == L']' ||
                                character == L'-' || character == L'>' ||
-                               character == L'@';
+                               character == L'@' || character == L'=';
         if (!separator) {
             continue;
         }
@@ -209,6 +209,26 @@ const wchar_t* DepStageName(uint32_t stage) {
     case AMGER_DEP_STAGE_REGISTER: return L"dependency register";
     case AMGER_DEP_STAGE_IMPORT: return L"dependency imports";
     case AMGER_DEP_STAGE_ROUND: return L"round limit";
+    default: return L"unknown";
+    }
+}
+
+const wchar_t* InitStageName(uint32_t stage) {
+    switch (stage) {
+    case AMGER_INIT_STAGE_NONE: return L"none";
+    case AMGER_INIT_STAGE_PARAMETERS: return L"parameters";
+    case AMGER_INIT_STAGE_PROCESS: return L"process lookup";
+    case AMGER_INIT_STAGE_LOAD_CONFIG: return L"load config";
+    case AMGER_INIT_STAGE_COOKIE: return L"security cookie";
+    case AMGER_INIT_STAGE_ACTIVATION: return L"activation context";
+    case AMGER_INIT_STAGE_TLS_INDEX: return L"TLS index";
+    case AMGER_INIT_STAGE_TLS_CALLBACK: return L"TLS callbacks";
+    case AMGER_INIT_STAGE_THREAD_TLS: return L"thread TLS";
+    case AMGER_INIT_STAGE_ROUTINES: return L"routine resolution";
+    case AMGER_INIT_STAGE_PC_DETOUR: return L"PC-to-file detour";
+    case AMGER_INIT_STAGE_PDATA: return L"exception table";
+    case AMGER_INIT_STAGE_CFG: return L"CFG retarget";
+    case AMGER_INIT_STAGE_APC: return L"user APC";
     default: return L"unknown";
     }
 }
@@ -779,6 +799,117 @@ void InjectScreen(Session& session) {
                 (dep.Flags & AMGER_DEP_FLAG_REVERTED) != 0u;
             emit(L"  Rollback: ",
                  reverted ? L"dependencies released" : L"dependencies retained",
+                 reverted ? good : bad);
+            emit(L"  Execution: ", executionText, bad);
+            Console::WriteRaw(L"\n");
+        }
+
+        if (parser.Initialization.Flags != 0u ||
+            parser.Initialization.Status != 0u) {
+            const AMGER_INIT_REPORT& init = parser.Initialization;
+
+            Console::WriteRaw(L"\n");
+            Console::WriteLine(L"Initialization:", Console::Brush::White);
+            Console::WriteRaw(L"\n");
+
+            swprintf_s(reportLine, L"0x%08X (%s)", init.Status,
+                       StatusName(init.Status));
+            emit(L"  Status: ", reportLine, init.Status == 0u ? good : bad);
+            if (init.Status != 0u) {
+                swprintf_s(reportLine, L"0x%08X (%s)", init.FailureStage,
+                           InitStageName(init.FailureStage));
+                emit(L"  Failure Stage: ", reportLine, bad);
+            }
+            Console::WriteRaw(L"\n");
+
+            swprintf_s(reportLine, L"RVA 0x%08X | 0x%08X bytes | struct 0x%08X",
+                       init.LoadConfigRva, init.LoadConfigSize, init.StructSize);
+            emit(L"  Load Config: ", reportLine,
+                 (init.Flags & AMGER_INIT_FLAG_LOAD_CONFIG) != 0u ? good : bad);
+            swprintf_s(reportLine, L"0x%08X", init.GuardFlags);
+            emit(L"  Guard Flags: ", reportLine,
+                 (init.Flags & AMGER_INIT_FLAG_LOAD_CONFIG) != 0u ? good : bad);
+            Console::WriteRaw(L"\n");
+
+            swprintf_s(reportLine, L"RVA 0x%08X | low 0x%08X",
+                       init.CookieRva, init.CookieLow);
+            emit(L"  Security Cookie: ", reportLine,
+                 (init.Flags & AMGER_INIT_FLAG_COOKIE) != 0u ? good : bad);
+            swprintf_s(reportLine, L"0x%08X", init.ActivationStatus);
+            /* STATUS_NOT_FOUND (0xC0000225) is the measured "no manifest"
+             * result for a payload without a resource directory: a valid
+             * outcome, not a failure. Everything else non-zero is an error. */
+
+            emit(L"  Activation Context: ", reportLine,
+                 (init.ActivationStatus == 0u ||
+                  init.ActivationStatus == 0xC0000225u) ? good : bad);
+            Console::WriteRaw(L"\n");
+
+            swprintf_s(reportLine, L"%u", init.TlsCallbackCount);
+            emit(L"  TLS Callbacks: ", reportLine,
+                 (init.Flags & AMGER_INIT_FLAG_TLS_CALLBACK) != 0u ? good : bad);
+            swprintf_s(reportLine, L"%u | %u bytes", init.TlsIndex,
+                       init.TlsRawBytes);
+            emit(L"  TLS Index: ", reportLine,
+                 (init.Flags & AMGER_INIT_FLAG_TLS_INDEX) != 0u ? good : bad);
+            swprintf_s(reportLine,
+                       L"Size = %u / Buffer = 0x%016llX / Bits = %08X%08X%s",
+                       init.TlsBitmapSize,
+                       static_cast<unsigned long long>(init.TlsBitmapBuffer),
+                       init.TlsBitmapBits0, init.TlsBitmapBits1,
+                       init.TlsIndex >= 64u ? L" (expansion)" : L"");
+            emit(L"  TLS Bitmap: ", reportLine,
+                 init.TlsBitmapBuffer != 0u ? good : bad);
+            Console::WriteRaw(L"\n");
+
+            swprintf_s(reportLine, L"%u", init.ThreadsPatched);
+            emit(L"  TEB Slots Set: ", reportLine,
+                 (init.Flags & AMGER_INIT_FLAG_THREAD_TLS) != 0u ? good : bad);
+            if (init.ThreadsPatched == 0u) {
+                swprintf_s(reportLine, L"reasons=0x%08X snapshot=%u",
+                           init.TlsThreadSkipMask, init.TlsSnapshotCount);
+                emit(L"  Thread Probe: ", reportLine, bad);
+            }
+            swprintf_s(reportLine, L"%u", init.ThreadCallbacksFired);
+            emit(L"  Thread Callbacks: ", reportLine, good);
+            Console::WriteRaw(L"\n");
+
+            swprintf_s(reportLine, L"%u / %u", init.RoutinesResolved,
+                       init.RoutineCount);
+            emit(L"  Routines Resolved: ", reportLine,
+                 init.RoutinesResolved == init.RoutineCount ? good : bad);
+            swprintf_s(reportLine, L"%u / %u", init.ApcRuns, init.ApcFailures);
+            emit(L"  User APC Runs/Failures: ", reportLine,
+                 init.ApcFailures == 0u ? good : bad);
+            swprintf_s(reportLine,
+                       L"Started = %u / Completion = 0x%08X / Boosters = %u",
+                       init.ApcStubStarted, init.ApcCompletionValue,
+                       init.ApcBoosters);
+            emit(L"  APC Diagnostics: ", reportLine,
+                 init.ApcStubStarted != 0u ? good : bad);
+            Console::WriteRaw(L"\n");
+
+            swprintf_s(reportLine, L"%u tables / %u entries", init.PdataTables,
+                       init.PdataEntries);
+            emit(L"  Exception Tables: ", reportLine,
+                 (init.Flags & AMGER_INIT_FLAG_PDATA) != 0u ? good : bad);
+
+            swprintf_s(reportLine, L"%u bytes @ 0x%016llX", init.DetourBytes,
+                       static_cast<unsigned long long>(init.DetourAddress));
+            emit(L"  PC-to-File Detour: ", reportLine,
+                 (init.Flags & AMGER_INIT_FLAG_PC_DETOUR) != 0u ? good : bad);
+
+            swprintf_s(reportLine, L"0x%016llX -> 0x%016llX",
+                       static_cast<unsigned long long>(init.CfgCheckBefore),
+                       static_cast<unsigned long long>(init.CfgCheckAfter));
+            emit(L"  CFG Check Pointer: ", reportLine,
+                 (init.Flags & AMGER_INIT_FLAG_CFG) != 0u ? good : bad);
+            Console::WriteRaw(L"\n");
+
+            const bool reverted =
+                (init.Flags & AMGER_INIT_FLAG_REVERTED) != 0u;
+            emit(L"  Rollback: ",
+                 reverted ? L"initialization reverted" : L"initialization retained",
                  reverted ? good : bad);
             emit(L"  Execution: ", executionText, bad);
             Console::WriteRaw(L"\n");

@@ -27,6 +27,7 @@
 #define AMGER_SCN_WRITE 0x80000000u
 
 /* Two boundaries per section, plus the image start and end. */
+
 #define AMGER_SEAL_MAX_BOUNDARIES (2u * AMGER_PE_MAX_SECTIONS + 2u)
 
 typedef struct _AMGER_SEAL_RUN {
@@ -253,6 +254,7 @@ NTSTATUS SectionsSeal(
     }
 
     /* Do not zero Out: it already carries the commit/copy result of this map. */
+
     if (Image == NULL || ProcessId == NULL || RemoteBase == 0u ||
         Image->SizeOfImage == 0u || Image->SizeOfHeaders == 0u ||
         Image->SizeOfHeaders > Image->SizeOfImage) {

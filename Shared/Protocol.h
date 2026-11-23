@@ -32,21 +32,26 @@
 /* Opaque mixing constant. Deliberately not an ASCII pattern (the previous
  * value spelled a four-letter tag in little-endian bytes); it only separates
  * the derived command magic from the raw machine hash. */
+
 #define AMGER_MAGIC_NUMBER 0x7C1E9A43u
 
 /* Version 2 adds the sequence-counter snapshot protocol. */
+
 #define AMGER_PROTOCOL_VERSION 2u
 
 /* Never used by the driver as a final status. */
+
 #define AMGER_STATUS_PENDING 0xFFFFFFFFu
 
 /* Command identifiers carried in AMGER_COMMAND_HEADER.Command. */
+
 #define AMGER_COMMAND_PING   1u
 #define AMGER_COMMAND_INJECT 2u
 #define AMGER_COMMAND_EJECT  3u
 #define AMGER_COMMAND_STATUS 4u
 
 /* Bit flags carried in AMGER_COMMAND_HEADER.Options. */
+
 #define AMGER_OPTION_PROCESS_PROTECTION_MODE      0x00000001u
 #define AMGER_OPTION_VIRTUAL_MACHINE_PROTECT_WAIT 0x00000002u
 #define AMGER_OPTION_HEADER_ERASURE               0x00000004u
@@ -55,9 +60,11 @@
                                  AMGER_OPTION_HEADER_ERASURE)
 
 /* Payload bytes start immediately after the fixed header in the region. */
+
 #define AMGER_PAYLOAD_OFFSET AMGER_COMMAND_HEADER_SIZE
 
 /* Dispatcher log identifiers, one per validation/execution stage. */
+
 #define AMGER_LOG_ID_HEADER_VALIDATE   1u
 #define AMGER_LOG_ID_COMMAND_DECODE    2u
 #define AMGER_LOG_ID_PAYLOAD_RANGE     3u
@@ -90,8 +97,9 @@ typedef struct _AMGER_RESULT_CONTROL {
 /* Parser report lives in a dedicated area ahead of the log tail. The driver
  * fills it from the parsed descriptor; the client renders it as text. No
  * string literal is emitted by the driver. */
+
 #define AMGER_PARSER_REPORT_SIGNATURE 0x50415253u
-#define AMGER_REPORT_AREA_SIZE        2048u
+#define AMGER_REPORT_AREA_SIZE        4096u
 #define AMGER_REPORT_MAX_MODULES      16u
 #define AMGER_REPORT_NAME_LENGTH      32u
 
@@ -126,6 +134,7 @@ typedef struct _AMGER_ALLOC_REPORT {
 
 /* FailureStage names the exact pass that produced Status. It lets the client
  * explain a zero PageGroups value instead of guessing which call failed. */
+
 #define AMGER_MAP_STAGE_NONE        0u
 #define AMGER_MAP_STAGE_PARAMETERS  1u
 #define AMGER_MAP_STAGE_PROCESS     2u
@@ -256,6 +265,77 @@ typedef struct _AMGER_DEP_REPORT {
     uint32_t LoaderEntriesAfter;
 } AMGER_DEP_REPORT, * PAMGER_DEP_REPORT;
 
+/* Phase 6 publishes only measured outcomes. Every count below comes from a
+ * byte actually read from the target or from a call that returned a status;
+ * nothing here states a design property of the engine. */
+
+#define AMGER_INIT_FLAG_LOAD_CONFIG  0x00000001u
+#define AMGER_INIT_FLAG_COOKIE       0x00000002u
+#define AMGER_INIT_FLAG_ACTIVATION   0x00000004u
+#define AMGER_INIT_FLAG_TLS_INDEX    0x00000008u
+#define AMGER_INIT_FLAG_TLS_CALLBACK 0x00000010u
+#define AMGER_INIT_FLAG_THREAD_TLS   0x00000020u
+#define AMGER_INIT_FLAG_PC_DETOUR    0x00000040u
+#define AMGER_INIT_FLAG_PDATA        0x00000080u
+#define AMGER_INIT_FLAG_CFG          0x00000100u
+#define AMGER_INIT_FLAG_REVERTED     0x00000200u
+
+#define AMGER_INIT_STAGE_NONE        0u
+#define AMGER_INIT_STAGE_PARAMETERS  1u
+#define AMGER_INIT_STAGE_PROCESS     2u
+#define AMGER_INIT_STAGE_LOAD_CONFIG 3u
+#define AMGER_INIT_STAGE_COOKIE      4u
+#define AMGER_INIT_STAGE_ACTIVATION  5u
+#define AMGER_INIT_STAGE_TLS_INDEX   6u
+#define AMGER_INIT_STAGE_TLS_CALLBACK 7u
+#define AMGER_INIT_STAGE_THREAD_TLS  8u
+#define AMGER_INIT_STAGE_ROUTINES    9u
+#define AMGER_INIT_STAGE_PC_DETOUR   10u
+#define AMGER_INIT_STAGE_PDATA       11u
+#define AMGER_INIT_STAGE_CFG         12u
+#define AMGER_INIT_STAGE_APC         13u
+
+#define AMGER_INIT_BUILD_ID           7u
+
+typedef struct _AMGER_INIT_REPORT {
+    uint32_t BuildId;
+    uint32_t Status;
+    uint32_t FailureStage;
+    uint32_t Flags;
+    uint32_t LoadConfigRva;
+    uint32_t LoadConfigSize;
+    uint32_t StructSize;
+    uint32_t GuardFlags;
+    uint32_t CookieRva;
+    uint32_t CookieLow;
+    uint32_t TlsCallbackCount;
+    uint32_t TlsIndex;
+    uint32_t TlsBitmapSize;
+    uint64_t TlsBitmapBuffer;
+    uint32_t TlsBitmapBits0;
+    uint32_t TlsBitmapBits1;
+    uint32_t TlsRawBytes;
+    uint32_t ThreadsPatched;
+    uint32_t TlsThreadSkipMask;
+    uint32_t TlsSnapshotCount;
+    uint32_t ThreadCallbacksFired;
+    uint32_t RoutinesResolved;
+    uint32_t RoutineCount;
+    uint32_t ApcRuns;
+    uint32_t ApcFailures;
+    uint32_t ApcStubStarted;
+    uint32_t ApcCompletionValue;
+    uint32_t ApcBoosters;
+    uint32_t DetourBytes;
+    uint32_t PdataTables;
+    uint32_t PdataEntries;
+    uint32_t ActivationStatus;
+    uint64_t DetourAddress;
+    uint64_t CfgCheckBefore;
+    uint64_t CfgCheckAfter;
+    uint64_t RemoteBase;
+} AMGER_INIT_REPORT, * PAMGER_INIT_REPORT;
+
 typedef struct _AMGER_PARSER_REPORT {
     uint32_t Signature;
     uint32_t ParseStatus;
@@ -288,6 +368,7 @@ typedef struct _AMGER_PARSER_REPORT {
     AMGER_RELOC_REPORT Relocation;
     AMGER_IMPORT_REPORT Imports;
     AMGER_DEP_REPORT Dependencies;
+    AMGER_INIT_REPORT Initialization;
     char ImportNames[AMGER_REPORT_MAX_MODULES][AMGER_REPORT_NAME_LENGTH];
     char ExportNames[AMGER_REPORT_MAX_MODULES][AMGER_REPORT_NAME_LENGTH];
 } AMGER_PARSER_REPORT, * PAMGER_PARSER_REPORT;
@@ -295,11 +376,13 @@ typedef struct _AMGER_PARSER_REPORT {
 /* Reserved[0..3] is the seqlock. The log ring lives in a dedicated tail area
  * at the end of the registered region, so it cannot be overwritten by payload
  * bytes and holds enough records for several commands at once. */
+
 #define AMGER_LOG_AREA_SIZE    256u
 #define AMGER_LOG_ENTRY_COUNT  15u
 
 /* X-macro tables. Both the kernel and client generate their own lookup from
  * these, so a status is always rendered from the value actually returned. */
+
 #define AMGER_STATUS_TABLE(X)                                    \
     X(0x00000000u, STATUS_SUCCESS)                               \
     X(0x00000102u, STATUS_TIMEOUT)                               \
@@ -313,7 +396,9 @@ typedef struct _AMGER_PARSER_REPORT {
     X(0xC0000022u, STATUS_ACCESS_DENIED)                         \
     X(0xC0000034u, STATUS_OBJECT_NAME_NOT_FOUND)                 \
     X(0xC000009Au, STATUS_INSUFFICIENT_RESOURCES)                \
+    X(0xC00000BBu, STATUS_NOT_SUPPORTED)                         \
     X(0xC0000184u, STATUS_INVALID_DEVICE_STATE)                  \
+    X(0xC0000225u, STATUS_NOT_FOUND)                             \
     X(0xC000022Du, STATUS_RETRY)
 
 #define AMGER_LOG_ID_TABLE(X)                                    \
@@ -337,20 +422,25 @@ typedef struct _AMGER_PARSER_REPORT {
     X(AMGER_LOG_ID_INJECT_THREAD,    INJECT_THREAD)
 
 /* Maximum payload capacity reserved by the protocol for future work. */
+
 #define AMGER_MAXIMUM_PAYLOAD_SIZE (64u * 1024u * 1024u)
 
 /* Fixed command header and maximum registration capacity. */
+
 #define AMGER_COMMAND_HEADER_SIZE 128u
 #define AMGER_SHARED_REGION_SIZE (AMGER_COMMAND_HEADER_SIZE + AMGER_MAXIMUM_PAYLOAD_SIZE)
 
 /* Baseline region size for commands that carry no payload. */
+
 #define AMGER_COMMAND_REGION_SIZE AMGER_COMMAND_HEADER_SIZE
 
 /* Every registered region carries the command header and the log tail. */
+
 #define AMGER_MINIMUM_REGION_SIZE \
     (AMGER_COMMAND_HEADER_SIZE + AMGER_REPORT_AREA_SIZE + AMGER_LOG_AREA_SIZE)
 
 /* Seqlock fields inside AMGER_COMMAND_HEADER.Reserved. */
+
 #define AMGER_SEQUENCE_OFFSET 48u
 #define AMGER_SEQUENCE_RETRY_LIMIT 4u
 
@@ -358,11 +448,13 @@ typedef struct _AMGER_PARSER_REPORT {
  * There is no product string in any device name. The two sides compute the
  * same values from the same registry value; a failed read falls back to a
  * derived constant so both still agree. */
+
 #define AMGER_NAME_DIGITS 16u
 
 /* Neutral fallback when the MachineGuid registry value is unreadable. Both
  * sides derive from the same text, so the value only has to be identical —
  * it must not carry any product identifier. */
+
 #define AMGER_FALLBACK_GUID L"6F1D9A24-8C3E-4B57-A0D2-9E8F1C4A6B30"
 
 /* FNV-1a 64 over UTF-16 code units, in C so both C and C++ can use it. */
@@ -383,12 +475,14 @@ static __inline uint64_t AmgerMachineHash(const wchar_t* text, size_t length) {
  * (the prefix), the AMGER_NAME_DIGITS hex digits it appends, and the trailing
  * NUL. Every caller must guarantee at least this much room; call sites assert
  * it at compile time. */
+
 #define AMGER_APPEND_NAME_CAPACITY(prefix_length) \
     ((prefix_length) + AMGER_NAME_DIGITS + 1u)
 
 /* Assert a destination buffer has room for a prefix of prefix_length wchar_t,
  * the appended digits, and the NUL. Widen wcslen(prefix) as the caller's
  * compile-time constant (e.g. the literal length, not a runtime value). */
+
 #define AMGER_ASSERT_NAME_BUFFER(buffer_elems, prefix_length) \
     AMGER_STATIC_ASSERT((buffer_elems) >= AMGER_APPEND_NAME_CAPACITY(prefix_length), \
                         "name buffer too small for prefix + digits + NUL")
@@ -428,6 +522,7 @@ static __inline uint32_t AmgerMagicValue(uint64_t hash) {
  * CTL_CODE definition, written locally so neither compilation environment
  * needs devioctl.h. FILE_DEVICE_UNKNOWN + METHOD_BUFFERED + FILE_WRITE_ACCESS.
  */
+
 #ifndef CTL_CODE
 #define CTL_CODE(DeviceType, Function, Method, Access) \
     (((DeviceType) << 16) | ((Access) << 14) | ((Function) << 2) | (Method))
@@ -443,6 +538,7 @@ static __inline uint32_t AmgerMagicValue(uint64_t hash) {
  * The PING command is issued through AMGER_IOCTL_KICK with AMGER_COMMAND_PING
  * in the shared header; there is no dedicated PING IOCTL.
  */
+
 #define AMGER_IOCTL_REGISTER_SHARED_REGION \
     CTL_CODE(AMGER_DEVICE_TYPE, AMGER_IOCTL_FUNCTION_REGISTER, AMGER_IOCTL_METHOD, AMGER_IOCTL_ACCESS)
 #define AMGER_IOCTL_KICK \

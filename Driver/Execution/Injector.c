@@ -4,7 +4,8 @@
 #include "Relocate/Fixups.h"
 #include "Imports/Lookup.h"
 #include "Imports/Binding/Resolve.h"
-#include "Dependencies/Graph.h"
+#include "Dependencies/Table/Graph.h"
+#include "Initialize/Runtime.h"
 
 /*
  * Phase 1 reserves the image, Phase 2 copies it, Phase 3 applies relocations,
@@ -46,6 +47,7 @@ static VOID MarkReverted(const AMGER_INJECT_CONTEXT* Context,
 
     /* Do not publish an empty phase block just because the reservation was
      * released after an earlier phase failed. */
+
     if ((RelocReport->Flags & AMGER_RELOC_FLAG_APPLIED) != 0u) {
         RelocReport->Flags |= AMGER_RELOC_FLAG_REVERTED;
     }
@@ -64,10 +66,13 @@ NTSTATUS InjectorExecute(
     AMGER_RELOC_REPORT localReloc;
     AMGER_IMPORT_REPORT localImport;
     AMGER_DEP_REPORT localDep;
+    AMGER_INIT_REPORT localInit;
     PAMGER_MAP_REPORT mapReport;
     PAMGER_RELOC_REPORT relocReport;
     PAMGER_IMPORT_REPORT importReport;
     PAMGER_DEP_REPORT depReport;
+    PAMGER_INIT_REPORT initReport;
+    AMGER_INIT_CONTEXT init;
     uint64_t remoteBase = 0u;
     uint64_t delta;
     NTSTATUS status;
@@ -85,14 +90,18 @@ NTSTATUS InjectorExecute(
     RtlZeroMemory(&localReloc, sizeof(localReloc));
     RtlZeroMemory(&localImport, sizeof(localImport));
     RtlZeroMemory(&localDep, sizeof(localDep));
+    RtlZeroMemory(&localInit, sizeof(localInit));
     mapReport = (Context->MapReport != NULL) ? Context->MapReport : &localMap;
     relocReport = (Context->RelocReport != NULL) ? Context->RelocReport : &localReloc;
     importReport = (Context->ImportReport != NULL) ? Context->ImportReport : &localImport;
     depReport = (Context->DepReport != NULL) ? Context->DepReport : &localDep;
+    initReport = (Context->InitReport != NULL) ? Context->InitReport : &localInit;
     RtlZeroMemory(mapReport, sizeof(*mapReport));
     RtlZeroMemory(relocReport, sizeof(*relocReport));
     RtlZeroMemory(importReport, sizeof(*importReport));
     RtlZeroMemory(depReport, sizeof(*depReport));
+    RtlZeroMemory(initReport, sizeof(*initReport));
+    RtlZeroMemory(&init, sizeof(init));
 
     if (Context->AllocReport != NULL) {
         RtlZeroMemory(Context->AllocReport, sizeof(*Context->AllocReport));
@@ -119,6 +128,7 @@ NTSTATUS InjectorExecute(
     /* R17 reserves SizeOfImage, not the raw file size. The commit in Phase 2
      * asks for the same span; reserving the smaller file would make the commit
      * run past the VAD and return STATUS_CONFLICTING_ADDRESSES. */
+
     status = AllocateReserveImage(processId, Context->Image->SizeOfImage,
                                   &remoteBase);
     if (Context->AllocReport != NULL) {
@@ -150,6 +160,7 @@ NTSTATUS InjectorExecute(
 
     /* Reset the private dependency registry once per inject. ResolveImports
      * is called repeatedly during dependency rounds and must not clear it. */
+
     LookupResetPrivate();
     status = ResolveImports(Context->Image, processId, remoteBase,
                             importReport);
@@ -168,14 +179,35 @@ NTSTATUS InjectorExecute(
         return status;
     }
 
+    {
+        init.ProcessId = processId;
+        init.RemoteBase = remoteBase;
+        init.Image = Context->Image;
+        init.Report = initReport;
+        status = InitializePhase(&init);
+        if (!NT_SUCCESS(status)) {
+            ReleaseDependencyBases(processId, depReport);
+            revertStatus = MapSectionsRevert(processId, remoteBase);
+            MarkReverted(Context, mapReport, relocReport, importReport, depReport, revertStatus);
+            return status;
+        }
+    }
+
     status = SectionsSeal(Context->Image, processId, remoteBase, mapReport);
     if (!NT_SUCCESS(status)) {
+        InitializeRevert(&init);
         ReleaseDependencyBases(processId, depReport);
         revertStatus = MapSectionsRevert(processId, remoteBase);
         MarkReverted(Context, mapReport, relocReport, importReport, depReport, revertStatus);
         return status;
     }
 
+    /* Phases 7 and 8 are still deferred, so this inject is reverted as an R3
+     * rollback. InitializeRevert restores ntdll and releases the private APC
+     * pages before the mapping is unmapped. Once Entry and Execute land, the
+     * revert moves to the failure path only. */
+
+    InitializeRevert(&init);
     ReleaseDependencyBases(processId, depReport);
     revertStatus = MapSectionsRevert(processId, remoteBase);
     MarkReverted(Context, mapReport, relocReport, importReport, depReport, revertStatus);

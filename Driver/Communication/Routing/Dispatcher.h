@@ -42,6 +42,7 @@ typedef struct _AMGER_DISPATCH_CONTEXT {
     uint64_t ResultValue;
 
     /* Phase 0 output, published to the client through the report area. */
+
     AMGER_PE_IMAGE ParserImage;
     BOOLEAN ParserImageValid;
     uint32_t ParserStatus;
@@ -50,6 +51,7 @@ typedef struct _AMGER_DISPATCH_CONTEXT {
     AMGER_RELOC_REPORT RelocReport;
     AMGER_IMPORT_REPORT ImportReport;
     AMGER_DEP_REPORT DepReport;
+    AMGER_INIT_REPORT InitReport;
 } AMGER_DISPATCH_CONTEXT, * PAMGER_DISPATCH_CONTEXT;
 
 /*

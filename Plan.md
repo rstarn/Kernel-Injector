@@ -227,7 +227,7 @@ Verification order: test on `notepad` first. The `Imports:` block is the proof; 
 
 ## Dependencies
 
-R18 and R28 are implemented in `Driver/Execution/Dependencies/Images.h/.c` and `Graph.h/.c`; `Create.bat` compiles and links `Images.obj` and `Graph.obj`. Folder and file names are one word each and differ from the folder (`Dependencies` / `Images`, `Dependencies` / `Graph`).
+R18 and R28 are implemented in `Driver/Execution/Dependencies/Images.h/.c` and `Dependencies/Table/Graph.h/.c`; `Create.bat` compiles and links `Images.obj` and `Graph.obj`. Folder and file names are one word each and differ from the folder (`Dependencies` / `Images`, `Table` / `Graph`).
 
 API:
 - `ImagesMapDependency(...)` — kernel-only file acquisition, PE validation, reservation, section mapping and relocation of one dependency.

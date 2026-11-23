@@ -51,13 +51,16 @@ NTKERNELAPI NTSTATUS ZwQueryInformationProcess(
     PULONG ReturnLength);
 
 /* Called once while attached to the target process. */
+
 NTSTATUS LookupInitialize(AMGER_LOOKUP_CONTEXT* Out);
 
 /* Counts InLoadOrderModuleList entries in the target for before/after evidence. */
+
 NTSTATUS LookupCountLoaderModules(HANDLE ProcessId, uint32_t* OutCount);
 
 /* Resolves api-ms-win/ext-ms-win names through PEB->ApiSetMap v6/v4/v2.
  * Sets Redirected when the name was actually rewritten. */
+
 NTSTATUS LookupResolveApiSet(
     const AMGER_LOOKUP_CONTEXT* Context,
     const char* AnsiName,
@@ -67,6 +70,7 @@ NTSTATUS LookupResolveApiSet(
     BOOLEAN* OutRedirected);
 
 /* Case-insensitive Unicode lookup across private table and PEB loader list. */
+
 BOOLEAN LookupFindModule(
     const AMGER_LOOKUP_CONTEXT* Context,
     const WCHAR* Name,
@@ -75,6 +79,7 @@ BOOLEAN LookupFindModule(
     uint32_t* OutSize);
 
 /* Name or ordinal export lookup; forwarders are returned as strings. */
+
 NTSTATUS LookupGetExport(
     uint64_t ModuleBase,
     uint32_t ModuleSize,
@@ -84,6 +89,7 @@ NTSTATUS LookupGetExport(
     AMGER_EXPORT_RESULT* Out);
 
 /* Private table used by Phase 5 dependency mapping; never touches the PEB. */
+
 VOID LookupResetPrivate(VOID);
 BOOLEAN LookupRegisterPrivate(
     const WCHAR* Name,

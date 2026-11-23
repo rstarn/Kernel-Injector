@@ -11,9 +11,9 @@
  */
 
 #include <wdm.h>
-#include "../../../Shared/Protocol.h"
-#include "../../Utilities/Parser/Format.h"
-#include "../Reserve/Allocate.h"
+#include "../../../../Shared/Protocol.h"
+#include "../../../Utilities/Parser/Format.h"
+#include "../../Reserve/Allocate.h"
 
 #define AMGER_POOL_TAG_GRAPH    0x20202020u  /* four spaces: neutral, printable */
 #define AMGER_POOL_TAG_PENDING  0x21212121u  /* four '!': neutral, printable */

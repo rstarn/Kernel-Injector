@@ -577,6 +577,7 @@ static NTSTATUS KickWorker(PVOID ContextParameter) {
 
     /* Publish the full parser report into the dedicated area ahead of the log
      * tail. No string literal is emitted by the driver. */
+
     {
         PUCHAR reportArea = (PUCHAR)g_sharedSystemAddress + g_sharedRegionSize -
                             AMGER_LOG_AREA_SIZE - AMGER_REPORT_AREA_SIZE;
@@ -603,6 +604,9 @@ static NTSTATUS KickWorker(PVOID ContextParameter) {
         }
         if (dispatch.DepReport.Flags != 0u || dispatch.DepReport.Status != 0u) {
             report.Dependencies = dispatch.DepReport;
+        }
+        if (dispatch.InitReport.Flags != 0u || dispatch.InitReport.Status != 0u) {
+            report.Initialization = dispatch.InitReport;
         }
         MemoryBarrier();
         RtlCopyMemory(reportArea, &report, sizeof(report));

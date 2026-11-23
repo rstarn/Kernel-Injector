@@ -50,6 +50,7 @@ NTSTATUS DispatcherDispatch(
         RtlZeroMemory(&Context->RelocReport, sizeof(Context->RelocReport));
         RtlZeroMemory(&Context->ImportReport, sizeof(Context->ImportReport));
         RtlZeroMemory(&Context->DepReport, sizeof(Context->DepReport));
+        RtlZeroMemory(&Context->InitReport, sizeof(Context->InitReport));
         Context->StageId = (uint16_t)AMGER_LOG_ID_HEADER_VALIDATE;
 
         if (snapshot->Magic != Context->Magic ||
@@ -104,6 +105,7 @@ NTSTATUS DispatcherDispatch(
                     inject.RelocReport = &Context->RelocReport;
                     inject.ImportReport = &Context->ImportReport;
                     inject.DepReport = &Context->DepReport;
+                    inject.InitReport = &Context->InitReport;
                     Context->StageId = (uint16_t)AMGER_LOG_ID_INJECT;
                     status = InjectorExecute(&inject, &remoteBase);
                     if (NT_SUCCESS(status)) {

@@ -86,6 +86,7 @@ NTSTATUS ImagesMapDependency(AMGER_DEP_GRAPH* graph, AMGER_DEP_ENTRY* entry) {
     /* Neutral numeric tag: no product or payload string in the pool header.
      * ExAllocatePool2 needs a newer NTDDI than this driver targets; suppress
      * only the deprecation diagnostic at this call site. */
+
 #pragma warning(suppress : 4996)
     raw = (PUCHAR)ExAllocatePoolWithTag(PagedPool, rawSize, AMGER_POOL_TAG_RAW);
     if (raw == NULL) {

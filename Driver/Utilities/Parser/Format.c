@@ -375,6 +375,7 @@ static BOOLEAN StartsWithAscii(
 
 static BOOLEAN IsApiSetName(const char* name) {
     /* XOR-masked bytes avoid emitting an API-set prefix string in the driver. */
+
     static const unsigned char apiPrefix[] = {
         0x3Bu, 0x2Au, 0x33u, 0x77u, 0x37u, 0x29u,
         0x77u, 0x2Du, 0x33u, 0x34u
@@ -421,7 +422,10 @@ VOID PeBuildReport(
         if (Image->Directories[PE_DIR_LOAD_CONFIG].Size >= 152u &&
             NT_SUCCESS(PeRvaToOffset(Image, Image->Directories[PE_DIR_LOAD_CONFIG].Rva,
                                      152u, &offset))) {
-            Out->SecurityCookieRva = ReadLe32(Image->Base + offset + 88u);
+            uint64_t cookie = ReadLe64(Image->Base + offset + 88u);
+            Out->SecurityCookieRva = (uint32_t)(cookie >= Image->ImageBase &&
+                cookie - Image->ImageBase < Image->SizeOfImage
+                    ? cookie - Image->ImageBase : 0u);
             Out->GuardFlags = ReadLe32(Image->Base + offset + 144u);
         }
     }
@@ -430,13 +434,19 @@ VOID PeBuildReport(
         if (NT_SUCCESS(PeRvaToOffset(Image, Image->Directories[PE_DIR_TLS].Rva,
                                      40u, &offset))) {
             uint64_t callbacks = ReadLe64(Image->Base + offset + 24u);
-            for (index = 0u; index < AMGER_REPORT_MAX_MODULES; ++index) {
-                uint64_t value = 0u;
-                if (!ReadRvaU64(Image, (uint32_t)callbacks, &value) || value == 0u) {
-                    break;
+            uint32_t callbacksRva;
+            if (callbacks >= Image->ImageBase &&
+                callbacks - Image->ImageBase < Image->SizeOfImage) {
+                callbacksRva = (uint32_t)(callbacks - Image->ImageBase);
+                for (index = 0u; index < AMGER_REPORT_MAX_MODULES; ++index) {
+                    uint64_t value = 0u;
+                    if (!ReadRvaU64(Image, callbacksRva, &value) ||
+                        value == 0u) {
+                        break;
+                    }
+                    ++Out->TlsCallbackCount;
+                    callbacksRva += 8u;
                 }
-                ++Out->TlsCallbackCount;
-                callbacks += 8u;
             }
         }
     }

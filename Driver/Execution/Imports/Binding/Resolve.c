@@ -145,6 +145,7 @@ static NTSTATUS ResolveSymbol(
                           &moduleBase, &moduleSize)) {
         /* Record the first unresolved import verbatim so the client can name
          * the dependency Phase 5 must provide instead of only showing a count. */
+
         if (state->Report->DeferredCount == 0u) {
             CopyAscii(state->Report->DeferredModule,
                       sizeof(state->Report->DeferredModule), dllName);
@@ -312,6 +313,7 @@ static NTSTATUS ResolveDescriptorTable(
             if (!NT_SUCCESS(status)) {
                 /* NOT_FOUND is an absent export or a module deferred to Phase 5.
                  * Any other status is a malformed table and must stay visible. */
+
                 if (status != STATUS_NOT_FOUND) {
                     state->Report->LookupErrors++;
                 }
@@ -329,12 +331,14 @@ static NTSTATUS ResolveDescriptorTable(
                 InImage(image, handleRva, 8u)) {
                 /* The delay helper reads this slot; use the exact module that
                  * supplied the resolved export, including ApiSet hosts. */
+
                 Write64(state->System + handleRva, moduleBase);
             }
         }
     }
 
     /* A table whose Size counts only non-null descriptors is still valid. */
+
     return STATUS_SUCCESS;
 }
 

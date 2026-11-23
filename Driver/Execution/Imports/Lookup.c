@@ -13,6 +13,7 @@
 
 #define AMGER_PE_OFFSET_FIELD    0x03cu
 /* PE signature (4) + COFF file header (20) precede the optional header. */
+
 #define AMGER_OPTIONAL_HEADER_OFFSET 24u
 #define AMGER_OPTIONAL_HEADER_MAGIC_OFFSET 0u
 #define AMGER_OPTIONAL_HEADER_DIRCOUNT_OFFSET 108u
@@ -608,6 +609,7 @@ NTSTATUS LookupResolveApiSet(
     }
 
     /* v2 has no Size header; use the same upper bound as a v4/v6 Size field. */
+
     if (Read32(versionBytes) == 2u) {
         namespaceSize = 0x100000u;
     } else if (!UserRead(context->ApiSetMap + 4u, &namespaceSize,

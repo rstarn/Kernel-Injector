@@ -22,6 +22,7 @@
  * wdm.h in this translation unit. Declaring the documented signatures here
  * keeps the call type-checked; NtosKrnl.lib supplies the exports.
  */
+
 typedef struct _KAPC_STATE {
     LIST_ENTRY ApcListHead[2];
     PEPROCESS Process;

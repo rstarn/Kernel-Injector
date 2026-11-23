@@ -26,6 +26,7 @@
 #include "../../Shared/Protocol.h"
 
 /* Client-only return sentinels. The driver never returns these. */
+
 #define AMGER_CLIENT_REGION_FAILED      0xFFFFFFF0u
 #define AMGER_CLIENT_KICK_FAILED        0xFFFFFFF1u
 #define AMGER_CLIENT_STATUS_QUERY_FAILED 0xFFFFFFF2u

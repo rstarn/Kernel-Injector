@@ -96,6 +96,7 @@ NTSTATUS FixupsApply(
     Out->RelocSize = directory->Size;
 
     /* R7: no .reloc directory means no safe base change, so fail cleanly. */
+
     if (directory->Rva == 0u || directory->Size < 8u ||
         directory->Rva >= Image->SizeOfImage ||
         directory->Size > Image->SizeOfImage - directory->Rva) {
