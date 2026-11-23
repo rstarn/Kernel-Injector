@@ -163,6 +163,8 @@ cl %AMGER_DRIVER_FLAGS% /c /Fo"%AMGER_OBJECTS%\Allocate.obj" "%AMGER_ROOT%\Drive
 if errorlevel 1 goto :Failed
 cl %AMGER_DRIVER_FLAGS% /c /Fo"%AMGER_OBJECTS%\Sections.obj" "%AMGER_ROOT%\Driver\Execution\Mapping\Sections.c"
 if errorlevel 1 goto :Failed
+cl %AMGER_DRIVER_FLAGS% /c /Fo"%AMGER_OBJECTS%\Fixups.obj" "%AMGER_ROOT%\Driver\Execution\Relocate\Fixups.c"
+if errorlevel 1 goto :Failed
 cl %AMGER_DRIVER_FLAGS% /c /Fo"%AMGER_OBJECTS%\Format.obj" "%AMGER_ROOT%\Driver\Utilities\Parser\Format.c"
 if errorlevel 1 goto :Failed
 cl %AMGER_DRIVER_FLAGS% /c /Fo"%AMGER_OBJECTS%\Guard.obj" "%AMGER_ROOT%\Driver\Utilities\Guard.c"
@@ -180,6 +182,7 @@ link /nologo /driver /subsystem:native /machine:x64 /entry:GsDriverEntry /nodefa
     "%AMGER_OBJECTS%\Injector.obj" ^
     "%AMGER_OBJECTS%\Allocate.obj" ^
     "%AMGER_OBJECTS%\Sections.obj" ^
+    "%AMGER_OBJECTS%\Fixups.obj" ^
     "%AMGER_OBJECTS%\Format.obj" ^
     "%AMGER_OBJECTS%\Guard.obj" ^
     /libpath:"%AMGER_KM_LIB%" ntoskrnl.lib hal.lib BufferOverflowK.lib

@@ -124,6 +124,16 @@ typedef struct _AMGER_ALLOC_REPORT {
 #define AMGER_MAP_FLAG_PROTECTED   0x00000004u
 #define AMGER_MAP_FLAG_REVERTED    0x00000008u
 
+/* FailureStage names the exact pass that produced Status. It lets the client
+ * explain a zero PageGroups value instead of guessing which call failed. */
+#define AMGER_MAP_STAGE_NONE        0u
+#define AMGER_MAP_STAGE_PARAMETERS  1u
+#define AMGER_MAP_STAGE_PROCESS     2u
+#define AMGER_MAP_STAGE_COMMIT      3u
+#define AMGER_MAP_STAGE_MDL         4u
+#define AMGER_MAP_STAGE_COPY        5u
+#define AMGER_MAP_STAGE_PROTECT     6u
+
 typedef struct _AMGER_MAP_REPORT {
     uint32_t Status;
     uint32_t ImageSize;
@@ -132,10 +142,37 @@ typedef struct _AMGER_MAP_REPORT {
     uint32_t HeaderBytes;
     uint32_t PageGroups;
     uint32_t Flags;
+    uint32_t FailureStage;
     uint16_t SectionCount;
     uint16_t Reserved;
     uint64_t RemoteBase;
 } AMGER_MAP_REPORT, * PAMGER_MAP_REPORT;
+
+#define AMGER_RELOC_FLAG_APPLIED    0x00000001u
+#define AMGER_RELOC_FLAG_REVERTED   0x00000002u
+
+#define AMGER_RELOC_STAGE_NONE      0u
+#define AMGER_RELOC_STAGE_PARAMETERS 1u
+#define AMGER_RELOC_STAGE_PROCESS   2u
+#define AMGER_RELOC_STAGE_MDL       3u
+#define AMGER_RELOC_STAGE_DIRECTORY 4u
+#define AMGER_RELOC_STAGE_BLOCK     5u
+#define AMGER_RELOC_STAGE_ENTRY     6u
+
+typedef struct _AMGER_RELOC_REPORT {
+    uint32_t Status;
+    uint32_t FailureStage;
+    uint32_t RelocRva;
+    uint32_t RelocSize;
+    uint32_t BlockCount;
+    uint32_t FixupCount;
+    uint32_t Dir64Count;
+    uint32_t HighLowCount;
+    uint32_t SkippedCount;
+    uint32_t Flags;
+    uint64_t Delta;
+    uint64_t RemoteBase;
+} AMGER_RELOC_REPORT, * PAMGER_RELOC_REPORT;
 
 typedef struct _AMGER_PARSER_REPORT {
     uint32_t Signature;
@@ -166,6 +203,7 @@ typedef struct _AMGER_PARSER_REPORT {
     uint32_t Flags;
     AMGER_ALLOC_REPORT Allocation;
     AMGER_MAP_REPORT Mapping;
+    AMGER_RELOC_REPORT Relocation;
     char ImportNames[AMGER_REPORT_MAX_MODULES][AMGER_REPORT_NAME_LENGTH];
     char ExportNames[AMGER_REPORT_MAX_MODULES][AMGER_REPORT_NAME_LENGTH];
 } AMGER_PARSER_REPORT, * PAMGER_PARSER_REPORT;
@@ -187,6 +225,7 @@ typedef struct _AMGER_PARSER_REPORT {
     X(0xC0000005u, STATUS_ACCESS_VIOLATION)                      \
     X(0xC000000Du, STATUS_INVALID_PARAMETER)                     \
     X(0xC0000010u, STATUS_INVALID_DEVICE_REQUEST)                \
+    X(0xC0000018u, STATUS_CONFLICTING_ADDRESSES)                 \
     X(0xC0000022u, STATUS_ACCESS_DENIED)                         \
     X(0xC0000034u, STATUS_OBJECT_NAME_NOT_FOUND)                 \
     X(0xC000009Au, STATUS_INSUFFICIENT_RESOURCES)                \

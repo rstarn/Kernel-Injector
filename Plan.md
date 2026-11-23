@@ -45,7 +45,7 @@ Execution: Thread Hijacking
 
 ## Parser
 
-Implemented in `Driver/Utilities/Parser/Format.h` and `Format.c`. Phase 0 (R21, R16) is complete and wired into `Dispatcher.c`. Phases 1 and 2 are implemented in `Reserve/` and `Mapping/`; `InjectorExecute` orchestrates them but returns `STATUS_NOT_IMPLEMENTED` while phases 3–8 are deferred.
+Implemented in `Driver/Utilities/Parser/Format.h` and `Format.c`. Phase 0 (R21, R16) is complete and wired into `Dispatcher.c`. Phases 1, 2 and 3 are implemented in `Reserve/`, `Mapping/` and `Relocate/`; `InjectorExecute` orchestrates them but returns `STATUS_NOT_IMPLEMENTED` while phases 4–8 are deferred.
 
 API:
 - `PeParseAndValidate(Image, ImageSize, Out)` — returns STATUS_SUCCESS or STATUS_INVALID_PARAMETER; the descriptor is zeroed on entry.
@@ -117,20 +117,21 @@ Verification order: test on `notepad` first with the client console. Until Phase
 
 ## Mapping
 
-R8 and R11 are implemented in `Driver/Execution/Mapping/Sections.h` and `Sections.c`; `Create.bat` compiles and links `Sections.obj`. `Injector.c` keeps the Phase 1 reservation alive and calls this module before any later phase.
+R8 and R11 are implemented in `Driver/Execution/Mapping/Sections.h` and `Sections.c`; `Create.bat` compiles and links `Sections.obj`. `Injector.c` keeps the Phase 1 reservation alive and calls this module before any later phase. Protection is a separate `SectionsSeal` pass at the end of the currently implemented chain so relocations, imports and initialization can still write.
 
 API:
-- `MapSectionsMap(CONST AMGER_PE_IMAGE* Image, HANDLE ProcessId, uint64_t RemoteBase, PAMGER_MAP_REPORT Out)` — commits, copies and applies protections.
-- `MapSectionsRevert(HANDLE ProcessId, uint64_t RemoteBase, CONST AMGER_MAP_REPORT* Report)` — paired R3 rollback.
+- `MapSectionsMap(CONST AMGER_PE_IMAGE* Image, HANDLE ProcessId, uint64_t RemoteBase, PAMGER_MAP_REPORT Out)` — commits and copies.
+- `SectionsSeal(CONST AMGER_PE_IMAGE* Image, HANDLE ProcessId, uint64_t RemoteBase, PAMGER_MAP_REPORT Out)` — merges characteristics per page and promotes once.
+- `MapSectionsRevert(HANDLE ProcessId, uint64_t RemoteBase)` — paired R3 rollback.
 
 Sequence:
 1. Keep the Phase 1 reservation; do not release it on the success path.
 2. Commit `SizeOfImage` as `PAGE_READWRITE` at the reserved base with one kernel-origin `ZwAllocateVirtualMemory(MEM_COMMIT)` while attached. Never commit executable protection.
 3. Copy `SizeOfHeaders` bytes from image offset 0 to RVA 0.
 4. For each section: destination `RemoteBase + VirtualAddress`; source `Image->Base + RawOffset`; copy `min(VirtualSize, RawSize)`; zero-fill `VirtualSize - RawSize` when `VirtualSize > RawSize` (`.bss`). FileAlignment vs SectionAlignment is handled by RVA placement — a flat file copy is wrong.
-5. Group section ranges by **page**, merge characteristics into one protection per page, and apply protections once. Never leave a page RWX; promote RW → RX exactly once.
-6. Five protection cases from characteristics: no access -> `PAGE_NOACCESS`; execute only -> `PAGE_EXECUTE`; execute + read -> `PAGE_EXECUTE_READ`; read only -> `PAGE_READONLY`; read + write -> `PAGE_READWRITE`.
-7. Header wipe (`R20`) stays in Phase 7, not here.
+5. `SectionsSeal` groups section ranges by **page**, ORs the characteristics of overlapping regions, merges contiguous pages with equal protection, and applies one `ZwProtectVirtualMemory` call per run. Never leave a page RWX; promote RW → RX exactly once. Pages with no section or header coverage become `PAGE_NOACCESS`.
+6. Five protection cases from characteristics: no access -> `PAGE_NOACCESS`; execute only -> `PAGE_EXECUTE`; execute + read -> `PAGE_EXECUTE_READ`; read only -> `PAGE_READONLY`; read + write -> `PAGE_READWRITE`. Execute+write is promoted to `PAGE_EXECUTE_READ` because writes are already complete.
+7. Header wipe (`R20`) stays in Phase 7, not here. The last `ZwProtectVirtualMemory` length is clamped to `SizeOfImage` when the image is not page-aligned.
 
 Detection-aware decisions (research-backed):
 - ETW-TI emits `EtwTiLogProtectExecVm` when private memory becomes executable; kernel-caller PROTECTVM events exist. The immutable-code-page principle is RW -> RX once — protection fluctuation (RX -> RW, or repeated toggles) is high-signal, so each code page is promoted once and never touched again.
@@ -154,15 +155,41 @@ Mapping:
   Zero Filled: 0x00004A00
   Headers: 0x00000400
 
-  Protections: applied (no RWX)
-  Page Groups: 18
   Commit: read/write
+  Protections: applied (no RWX)
+  Page Groups: 7
 
   Rollback: mapping reverted
-  Execution: deferred to Phase 3
+  Execution: deferred to Phase 4
 ```
 
 Verification order: test on `notepad` first. INJECT must still return `STATUS_NOT_IMPLEMENTED`; the `Mapping:` block is the proof. Confirm with WinDbg `!vad` that the region is private and non-executable before promotion, then executable after. Overwatch is tested only after the entire injector is finished.
+
+## Relocation
+
+R7 is implemented in `Driver/Execution/Relocate/Fixups.h` and `Fixups.c`; `Create.bat` compiles and links `Fixups.obj`. Folder and file names are one word each and differ (`Relocate` / `Fixups`), matching `Reserve`, `Mapping` and `Parser`.
+
+API:
+- `FixupsApply(CONST AMGER_PE_IMAGE* Image, HANDLE ProcessId, uint64_t RemoteBase, uint64_t Delta, PAMGER_RELOC_REPORT Out)` — applies base relocations in place through one locked MDL.
+
+Sequence:
+1. Delta = `RemoteBase - Image->ImageBase`, computed with unsigned 64-bit wrap; the manager-chosen base is normally below the preferred `0x180000000`.
+2. Data directory index 5 must exist and fit inside `SizeOfImage`; a missing or empty `.reloc` fails clean, per R7.
+3. One MDL covers the whole image, because fixup targets live in code and data sections, not inside `.reloc`. It is locked `UserMode / IoWriteAccess` while attached to the target.
+4. Walk blocks (`PageRVA`, `BlockSize`), bounds-check the block and every entry before writing, and apply `DIR64 (10)` and `HIGHLOW (3)`. `ABSOLUTE (0)` is skipped; unknown types fail clean. All fields are read and written byte-wise.
+5. Every write happens while the image is still `RW`. `SectionsSeal` runs afterwards, so no page toggles back to writable and no RWX state is created.
+6. Any failure returns a named NTSTATUS; the injector releases the whole reservation, so no partially relocated image survives.
+
+Detection-aware decisions:
+- No `LoadLibrary`, no loader lock, no CFG bitmap update and no new ETW-TI protection event: the only writes are through an MDL into an already committed private region.
+- No user-mode API chain, no remote handle, no `WriteProcessMemory`; the target is referenced with `PsLookupProcessByProcessId` only.
+- No string literal, no pool tag and no file-backed section: the descriptor and both reports stay on the stack.
+
+Report extension: `AMGER_RELOC_REPORT` (Status, FailureStage, RelocRva, RelocSize, Blocks, Fixups, DIR64, HIGHLOW, Skipped, Flags, Delta, RemoteBase) joined `Allocation` and `Mapping` in the 2048-byte report area. `sizeof(AMGER_PARSER_REPORT)` is 1256 bytes. The client renders a `Relocations:` block in the same white-label / green-red style. Mapping and Relocation also print `Failure Stage:` when Status is non-zero, so the exact failing kernel pass is visible.
+
+Verified offline against `Assets\Target.dll`: 21 blocks, 1609 `DIR64` fixups, 11 `ABSOLUTE` skips, zero `HIGHLOW`, matching the parser's `RelocDir64Count`; the seal algorithm yields 7 page groups. Driver builds `/W4 /kernel` clean; `Verify.bat` passes.
+
+Verification order: test on `notepad` first. INJECT must still return `STATUS_NOT_IMPLEMENTED`; the `Relocations:` block is the proof. Overwatch is tested only after the entire injector is finished.
 
 # Injection: Manual Mapping
 

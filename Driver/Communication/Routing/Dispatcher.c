@@ -5,9 +5,9 @@
 /* INJECT consumes the full payload contract: a real target, a bounded payload
  * at the fixed offset, only known option bits, and synchronous completion.
  * The bridge has already bounds-checked the range inside the registered MDL;
- * this layer validates the command-level semantics. Phases 1 and 2 are linked;
- * later phases are deferred, so a valid request reports NOT_IMPLEMENTED after
- * the image has been mapped. */
+ * this layer validates the command-level semantics. Phases 1 through 3 are
+ * linked; phases 4-8 are deferred, so a valid request reports NOT_IMPLEMENTED
+ * after the image has been mapped, relocated and sealed. */
 
 static NTSTATUS ValidateInjectRequest(const AMGER_DISPATCH_CONTEXT* Context) {
     const AMGER_COMMAND_SNAPSHOT* snapshot = Context->Snapshot;
@@ -46,6 +46,7 @@ NTSTATUS DispatcherDispatch(
         Context->ParserStatus = 0u;
         RtlZeroMemory(&Context->AllocReport, sizeof(Context->AllocReport));
         RtlZeroMemory(&Context->MapReport, sizeof(Context->MapReport));
+        RtlZeroMemory(&Context->RelocReport, sizeof(Context->RelocReport));
         Context->StageId = (uint16_t)AMGER_LOG_ID_HEADER_VALIDATE;
 
         if (snapshot->Magic != Context->Magic ||
@@ -97,6 +98,7 @@ NTSTATUS DispatcherDispatch(
                     inject.Image = &image;
                     inject.AllocReport = &Context->AllocReport;
                     inject.MapReport = &Context->MapReport;
+                    inject.RelocReport = &Context->RelocReport;
                     Context->StageId = (uint16_t)AMGER_LOG_ID_INJECT;
                     status = InjectorExecute(&inject, &remoteBase);
                     if (NT_SUCCESS(status)) {

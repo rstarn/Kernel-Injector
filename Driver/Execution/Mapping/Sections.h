@@ -4,10 +4,12 @@
 /*
  * Sections.h - Phase 2 (R8, R11) section mapping.
  *
- * Contract: commits the reserved image, copies headers and sections from the
- * parsed descriptor, then applies per-section protections. All target writes
- * go through an MDL-locked system mapping; protection changes use kernel-origin
- * Zw calls. The paired revert releases the whole reservation for R3 rollback.
+ * Contract: commits the reserved image and copies headers and sections from
+ * the parsed descriptor through an MDL-locked system mapping. Protection is a
+ * separate pass: SectionsSeal promotes the image once, after every phase that
+ * still needs to write (relocations, imports, initialization) has finished.
+ * That keeps each code page RW -> RX exactly once with no RWX state.
+ * The paired revert releases the whole reservation for R3 rollback.
  */
 
 #include <wdm.h>
@@ -23,6 +25,12 @@ NTKERNELAPI NTSTATUS ZwProtectVirtualMemory(
     PULONG OldProtect);
 
 NTSTATUS MapSectionsMap(
+    const AMGER_PE_IMAGE* Image,
+    HANDLE ProcessId,
+    uint64_t RemoteBase,
+    PAMGER_MAP_REPORT Out);
+
+NTSTATUS SectionsSeal(
     const AMGER_PE_IMAGE* Image,
     HANDLE ProcessId,
     uint64_t RemoteBase,

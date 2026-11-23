@@ -1,18 +1,44 @@
 #include "Injector.h"
 #include "Reserve/Allocate.h"
 #include "Mapping/Sections.h"
+#include "Relocate/Fixups.h"
 
 /*
- * Phase 1 reserves the image and Phase 2 maps its sections. Phases 3 through
- * 8 are still deferred, so a successfully mapped image is reverted as R3
- * rollback before returning NOT_IMPLEMENTED. Once the later phases land, that
- * revert moves to the failure path only.
+ * Phase 1 reserves the image, Phase 2 copies it, Phase 3 applies relocations,
+ * then SectionsSeal promotes protections once. Phases 4 through 8 are still
+ * deferred, so the image is reverted as R3 rollback before returning
+ * NOT_IMPLEMENTED. Once the later phases land, that revert moves to the
+ * failure path only.
  */
+
+static VOID MarkReverted(const AMGER_INJECT_CONTEXT* Context,
+                         PAMGER_MAP_REPORT MapReport,
+                         PAMGER_RELOC_REPORT RelocReport,
+                         NTSTATUS RevertStatus) {
+    if (!NT_SUCCESS(RevertStatus)) {
+        return;
+    }
+    if (Context->AllocReport != NULL) {
+        Context->AllocReport->Flags |= AMGER_ALLOC_FLAG_RELEASED;
+    }
+    MapReport->Flags |= AMGER_MAP_FLAG_REVERTED;
+
+    /* A failure before FixupsApply must not publish an empty Relocations
+     * block just because the reservation was released afterwards. */
+    if ((RelocReport->Flags & AMGER_RELOC_FLAG_APPLIED) != 0u) {
+        RelocReport->Flags |= AMGER_RELOC_FLAG_REVERTED;
+    }
+}
 
 NTSTATUS InjectorExecute(
     const AMGER_INJECT_CONTEXT* Context,
     uint64_t* OutRemoteBase) {
+    AMGER_MAP_REPORT localMap;
+    AMGER_RELOC_REPORT localReloc;
+    PAMGER_MAP_REPORT mapReport;
+    PAMGER_RELOC_REPORT relocReport;
     uint64_t remoteBase = 0u;
+    uint64_t delta;
     NTSTATUS status;
     NTSTATUS revertStatus;
     HANDLE processId;
@@ -24,23 +50,38 @@ NTSTATUS InjectorExecute(
         return STATUS_INVALID_PARAMETER;
     }
 
+    RtlZeroMemory(&localMap, sizeof(localMap));
+    RtlZeroMemory(&localReloc, sizeof(localReloc));
+    mapReport = (Context->MapReport != NULL) ? Context->MapReport : &localMap;
+    relocReport = (Context->RelocReport != NULL) ? Context->RelocReport : &localReloc;
+    RtlZeroMemory(mapReport, sizeof(*mapReport));
+    RtlZeroMemory(relocReport, sizeof(*relocReport));
+
     if (Context->AllocReport != NULL) {
         RtlZeroMemory(Context->AllocReport, sizeof(*Context->AllocReport));
-        Context->AllocReport->TargetProcessId = Context->TargetProcessId;
-        Context->AllocReport->ImageSize = (uint32_t)Context->ImageSize;
-    }
-    if (Context->MapReport != NULL) {
-        RtlZeroMemory(Context->MapReport, sizeof(*Context->MapReport));
     }
 
     if (Context->ImageBase == NULL || Context->ImageSize == 0u ||
         Context->TargetProcessId == 0u || Context->Image == NULL) {
+        mapReport->Status = (uint32_t)STATUS_INVALID_PARAMETER;
+        mapReport->FailureStage = AMGER_MAP_STAGE_PARAMETERS;
+        relocReport->Status = (uint32_t)STATUS_INVALID_PARAMETER;
+        relocReport->FailureStage = AMGER_RELOC_STAGE_PARAMETERS;
         return STATUS_INVALID_PARAMETER;
     }
 
     processId = (HANDLE)(uintptr_t)Context->TargetProcessId;
 
-    status = AllocateReserveImage(processId, Context->ImageSize, &remoteBase);
+    if (Context->AllocReport != NULL) {
+        Context->AllocReport->TargetProcessId = Context->TargetProcessId;
+        Context->AllocReport->ImageSize = Context->Image->SizeOfImage;
+    }
+
+    /* R17 reserves SizeOfImage, not the raw file size. The commit in Phase 2
+     * asks for the same span; reserving the smaller file would make the commit
+     * run past the VAD and return STATUS_CONFLICTING_ADDRESSES. */
+    status = AllocateReserveImage(processId, Context->Image->SizeOfImage,
+                                  &remoteBase);
     if (Context->AllocReport != NULL) {
         Context->AllocReport->Status = (uint32_t)status;
         Context->AllocReport->RemoteBase = remoteBase;
@@ -52,29 +93,30 @@ NTSTATUS InjectorExecute(
         Context->AllocReport->Flags = AMGER_ALLOC_FLAG_RESERVED;
     }
 
-    status = MapSectionsMap(Context->Image, processId, remoteBase,
-                            Context->MapReport);
+    status = MapSectionsMap(Context->Image, processId, remoteBase, mapReport);
     if (!NT_SUCCESS(status)) {
         revertStatus = MapSectionsRevert(processId, remoteBase);
-        if (Context->MapReport != NULL) {
-            if (NT_SUCCESS(revertStatus)) {
-                Context->MapReport->Flags |= AMGER_MAP_FLAG_REVERTED;
-            } else {
-                Context->MapReport->Status = (uint32_t)revertStatus;
-            }
-        }
-        if (Context->AllocReport != NULL && NT_SUCCESS(revertStatus)) {
-            Context->AllocReport->Flags |= AMGER_ALLOC_FLAG_RELEASED;
-        }
+        MarkReverted(Context, mapReport, relocReport, revertStatus);
+        return status;
+    }
+
+    delta = remoteBase - Context->Image->ImageBase;
+    status = FixupsApply(Context->Image, processId, remoteBase, delta,
+                         relocReport);
+    if (!NT_SUCCESS(status)) {
+        revertStatus = MapSectionsRevert(processId, remoteBase);
+        MarkReverted(Context, mapReport, relocReport, revertStatus);
+        return status;
+    }
+
+    status = SectionsSeal(Context->Image, processId, remoteBase, mapReport);
+    if (!NT_SUCCESS(status)) {
+        revertStatus = MapSectionsRevert(processId, remoteBase);
+        MarkReverted(Context, mapReport, relocReport, revertStatus);
         return status;
     }
 
     revertStatus = MapSectionsRevert(processId, remoteBase);
-    if (Context->MapReport != NULL && NT_SUCCESS(revertStatus)) {
-        Context->MapReport->Flags |= AMGER_MAP_FLAG_REVERTED;
-    }
-    if (Context->AllocReport != NULL && NT_SUCCESS(revertStatus)) {
-        Context->AllocReport->Flags |= AMGER_ALLOC_FLAG_RELEASED;
-    }
+    MarkReverted(Context, mapReport, relocReport, revertStatus);
     return STATUS_NOT_IMPLEMENTED;
 }

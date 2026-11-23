@@ -147,6 +147,35 @@ const wchar_t* LogIdName(uint16_t id) {
     return known != nullptr ? known : L"UNKNOWN";
 }
 
+/* Stage codes travel with the phase reports, so a failed inject explains
+ * which kernel pass rejected it instead of showing a bare NTSTATUS. */
+
+const wchar_t* MapStageName(uint32_t stage) {
+    switch (stage) {
+    case AMGER_MAP_STAGE_NONE: return L"none";
+    case AMGER_MAP_STAGE_PARAMETERS: return L"parameters";
+    case AMGER_MAP_STAGE_PROCESS: return L"process lookup";
+    case AMGER_MAP_STAGE_COMMIT: return L"commit";
+    case AMGER_MAP_STAGE_MDL: return L"MDL lock";
+    case AMGER_MAP_STAGE_COPY: return L"section copy";
+    case AMGER_MAP_STAGE_PROTECT: return L"protection seal";
+    default: return L"unknown";
+    }
+}
+
+const wchar_t* RelocStageName(uint32_t stage) {
+    switch (stage) {
+    case AMGER_RELOC_STAGE_NONE: return L"none";
+    case AMGER_RELOC_STAGE_PARAMETERS: return L"parameters";
+    case AMGER_RELOC_STAGE_PROCESS: return L"process lookup";
+    case AMGER_RELOC_STAGE_MDL: return L"MDL lock";
+    case AMGER_RELOC_STAGE_DIRECTORY: return L"reloc directory";
+    case AMGER_RELOC_STAGE_BLOCK: return L"reloc block";
+    case AMGER_RELOC_STAGE_ENTRY: return L"reloc entry";
+    default: return L"unknown";
+    }
+}
+
 void PrintLogs(const std::vector<ChannelClient::LogRecord>& records) {
     uint16_t previousId = 0u;
     for (const auto& record : records) {
@@ -447,7 +476,7 @@ void InjectScreen(Session& session) {
             emit(L"  Reservation: ",
                  released ? L"released" : reserved ? L"active" : L"none",
                  reserved ? good : bad);
-            emit(L"  Commit: ", L"deferred to Phase 2", bad);
+            emit(L"  Commit: ", L"performed in Mapping", good);
             Console::WriteRaw(L"\n");
             emit(L"  VAD State: ", L"private, non-executable", good);
             emit(L"  Handle: ", L"none (PsLookup only)", good);
@@ -457,7 +486,7 @@ void InjectScreen(Session& session) {
             emit(L"  Rollback: ",
                  released ? L"reserved region released" : L"reservation retained",
                  released ? good : bad);
-            emit(L"  Execution: ", L"deferred to Phase 2", bad);
+            emit(L"  Execution: ", L"deferred (phases 4-8)", bad);
             Console::WriteRaw(L"\n");
         }
 
@@ -471,6 +500,11 @@ void InjectScreen(Session& session) {
             swprintf_s(reportLine, L"0x%08X (%s)", map.Status,
                        StatusName(map.Status));
             emit(L"  Status: ", reportLine, map.Status == 0u ? good : bad);
+            if (map.Status != 0u) {
+                swprintf_s(reportLine, L"0x%08X (%s)", map.FailureStage,
+                           MapStageName(map.FailureStage));
+                emit(L"  Failure Stage: ", reportLine, bad);
+            }
             Console::WriteRaw(L"\n");
             swprintf_s(reportLine, L"0x%016llX",
                        static_cast<unsigned long long>(map.RemoteBase));
@@ -489,17 +523,74 @@ void InjectScreen(Session& session) {
             emit(L"  Headers: ", reportLine, good);
             Console::WriteRaw(L"\n");
 
-            emit(L"  Commit: ", L"read/write", good);
-            emit(L"  Protections: ", L"applied (no RWX)", good);
+            const bool committed = (map.Flags & AMGER_MAP_FLAG_COMMITTED) != 0u;
+            const bool sealed = (map.Flags & AMGER_MAP_FLAG_PROTECTED) != 0u;
+            emit(L"  Commit: ", committed ? L"read/write" : L"not committed",
+                 committed ? good : bad);
+            emit(L"  Protections: ",
+                 sealed ? L"applied (no RWX)" : L"pending (image still writable)",
+                 sealed ? good : bad);
             swprintf_s(reportLine, L"%u", static_cast<unsigned>(map.PageGroups));
-            emit(L"  Page Groups: ", reportLine, good);
+            emit(L"  Page Groups: ", reportLine, sealed ? good : bad);
             Console::WriteRaw(L"\n");
 
             const bool reverted = (map.Flags & AMGER_MAP_FLAG_REVERTED) != 0u;
             emit(L"  Rollback: ",
                  reverted ? L"mapping reverted" : L"mapping retained",
                  reverted ? good : bad);
-            emit(L"  Execution: ", L"deferred to Phase 3", bad);
+            emit(L"  Execution: ", L"deferred to Phase 4", bad);
+            Console::WriteRaw(L"\n");
+        }
+
+        if (parser.Relocation.Flags != 0u || parser.Relocation.Status != 0u) {
+            const AMGER_RELOC_REPORT& reloc = parser.Relocation;
+
+            Console::WriteRaw(L"\n");
+            Console::WriteLine(L"Relocations:", Console::Brush::White);
+            Console::WriteRaw(L"\n");
+
+            swprintf_s(reportLine, L"0x%08X (%s)", reloc.Status,
+                       StatusName(reloc.Status));
+            emit(L"  Status: ", reportLine, reloc.Status == 0u ? good : bad);
+            if (reloc.Status != 0u) {
+                swprintf_s(reportLine, L"0x%08X (%s)", reloc.FailureStage,
+                           RelocStageName(reloc.FailureStage));
+                emit(L"  Failure Stage: ", reportLine, bad);
+            }
+            Console::WriteRaw(L"\n");
+
+            swprintf_s(reportLine, L"0x%08X", reloc.RelocRva);
+            emit(L"  Directory RVA: ", reportLine, good);
+            swprintf_s(reportLine, L"0x%08X", reloc.RelocSize);
+            emit(L"  Directory Size: ", reportLine, good);
+            swprintf_s(reportLine, L"0x%016llX",
+                       static_cast<unsigned long long>(reloc.Delta));
+            emit(L"  Base Delta: ", reportLine, good);
+            Console::WriteRaw(L"\n");
+
+            swprintf_s(reportLine, L"%u", static_cast<unsigned>(reloc.BlockCount));
+            emit(L"  Blocks: ", reportLine, good);
+            swprintf_s(reportLine, L"%u", static_cast<unsigned>(reloc.FixupCount));
+            emit(L"  Fixups: ", reportLine, good);
+            Console::WriteRaw(L"\n");
+            swprintf_s(reportLine, L"%u", static_cast<unsigned>(reloc.HighLowCount));
+            emit(L"  HIGHLOW: ", reportLine, good);
+            swprintf_s(reportLine, L"%u", static_cast<unsigned>(reloc.Dir64Count));
+            emit(L"  DIR64: ", reportLine, good);
+            swprintf_s(reportLine, L"%u", static_cast<unsigned>(reloc.SkippedCount));
+            emit(L"  Skipped (ABSOLUTE): ", reportLine, good);
+            Console::WriteRaw(L"\n");
+
+            emit(L"  Write Window: ", L"read/write (pre-seal)", good);
+            emit(L"  MDL: ", L"locked system mapping", good);
+            Console::WriteRaw(L"\n");
+
+            const bool reverted =
+                (reloc.Flags & AMGER_RELOC_FLAG_REVERTED) != 0u;
+            emit(L"  Rollback: ",
+                 reverted ? L"mapping reverted" : L"mapping retained",
+                 reverted ? good : bad);
+            emit(L"  Execution: ", L"deferred to Phase 4", bad);
             Console::WriteRaw(L"\n");
         }
     }
