@@ -176,6 +176,24 @@ const wchar_t* RelocStageName(uint32_t stage) {
     }
 }
 
+const wchar_t* ImportStageName(uint32_t stage) {
+    switch (stage) {
+    case AMGER_IMPORT_STAGE_NONE: return L"none";
+    case AMGER_IMPORT_STAGE_PARAMETERS: return L"parameters";
+    case AMGER_IMPORT_STAGE_PEB: return L"PEB / process";
+    case AMGER_IMPORT_STAGE_APISET: return L"ApiSet schema";
+    case AMGER_IMPORT_STAGE_MDL: return L"MDL lock";
+    case AMGER_IMPORT_STAGE_DESCRIPTOR: return L"import descriptor";
+    case AMGER_IMPORT_STAGE_MODULE: return L"module lookup";
+    case AMGER_IMPORT_STAGE_EXPORT: return L"export table";
+    case AMGER_IMPORT_STAGE_FORWARD: return L"forwarded export";
+    case AMGER_IMPORT_STAGE_IAT: return L"IAT write";
+    case AMGER_IMPORT_STAGE_DELAY: return L"delay import";
+    case AMGER_IMPORT_STAGE_BOUND: return L"bound import clear";
+    default: return L"unknown";
+    }
+}
+
 void PrintLogs(const std::vector<ChannelClient::LogRecord>& records) {
     uint16_t previousId = 0u;
     for (const auto& record : records) {
@@ -321,7 +339,7 @@ void InjectScreen(Session& session) {
 
     AMGER_PARSER_REPORT parser = {};
     if (session.channel.ParserReport(parser)) {
-        const std::wstring imports = AsciiList(parser.ImportNames, parser.ImportModuleCount);
+        const std::wstring importList = AsciiList(parser.ImportNames, parser.ImportModuleCount);
         const std::wstring exports = AsciiList(parser.ExportNames, parser.ExportCount);
         wchar_t reportLine[640] = {};
         const Console::Brush good = Console::Brush::LightGreen;
@@ -420,7 +438,7 @@ void InjectScreen(Session& session) {
         emit(L"  Image Size: ", reportLine, good);
         Console::WriteRaw(L"\n");
 
-        emitList(L"  Import Modules: ", imports);
+        emitList(L"  Import Modules: ", importList);
         Console::WriteRaw(L"\n");
 
         Console::WriteText(L"  Delay-load imports: ", Console::Brush::White);
@@ -486,7 +504,7 @@ void InjectScreen(Session& session) {
             emit(L"  Rollback: ",
                  released ? L"reserved region released" : L"reservation retained",
                  released ? good : bad);
-            emit(L"  Execution: ", L"deferred (phases 4-8)", bad);
+            emit(L"  Execution: ", L"deferred (phases 5-8)", bad);
             Console::WriteRaw(L"\n");
         }
 
@@ -538,7 +556,7 @@ void InjectScreen(Session& session) {
             emit(L"  Rollback: ",
                  reverted ? L"mapping reverted" : L"mapping retained",
                  reverted ? good : bad);
-            emit(L"  Execution: ", L"deferred to Phase 4", bad);
+            emit(L"  Execution: ", L"deferred to Phase 5", bad);
             Console::WriteRaw(L"\n");
         }
 
@@ -590,7 +608,68 @@ void InjectScreen(Session& session) {
             emit(L"  Rollback: ",
                  reverted ? L"mapping reverted" : L"mapping retained",
                  reverted ? good : bad);
-            emit(L"  Execution: ", L"deferred to Phase 4", bad);
+            emit(L"  Execution: ", L"deferred to Phase 5", bad);
+            Console::WriteRaw(L"\n");
+        }
+
+        if (parser.Imports.Flags != 0u || parser.Imports.Status != 0u) {
+            const AMGER_IMPORT_REPORT& imports = parser.Imports;
+
+            Console::WriteRaw(L"\n");
+            Console::WriteLine(L"Imports:", Console::Brush::White);
+            Console::WriteRaw(L"\n");
+
+            swprintf_s(reportLine, L"0x%08X (%s)", imports.Status,
+                       StatusName(imports.Status));
+            emit(L"  Status: ", reportLine, imports.Status == 0u ? good : bad);
+            if (imports.Status != 0u) {
+                swprintf_s(reportLine, L"0x%08X (%s)", imports.FailureStage,
+                           ImportStageName(imports.FailureStage));
+                emit(L"  Failure Stage: ", reportLine, bad);
+            }
+            Console::WriteRaw(L"\n");
+
+            swprintf_s(reportLine, L"%u", static_cast<unsigned>(imports.ModuleCount));
+            emit(L"  Modules: ", reportLine, good);
+            swprintf_s(reportLine, L"%u", static_cast<unsigned>(imports.DelayModuleCount));
+            emit(L"  Delayed Modules: ", reportLine, good);
+            swprintf_s(reportLine, L"%u", static_cast<unsigned>(imports.FunctionsResolved));
+            emit(L"  Functions Resolved: ", reportLine, good);
+            Console::WriteRaw(L"\n");
+
+            swprintf_s(reportLine, L"%u", static_cast<unsigned>(imports.ByNameCount));
+            emit(L"  By Name: ", reportLine, good);
+            swprintf_s(reportLine, L"%u", static_cast<unsigned>(imports.ByOrdinalCount));
+            emit(L"  By Ordinal: ", reportLine, good);
+            swprintf_s(reportLine, L"%u", static_cast<unsigned>(imports.ForwardedCount));
+            emit(L"  Forwarded: ", reportLine, good);
+            swprintf_s(reportLine, L"%u", static_cast<unsigned>(imports.ApiSetRedirectCount));
+            emit(L"  API-Set Redirects: ", reportLine, good);
+            Console::WriteRaw(L"\n");
+
+            swprintf_s(reportLine, L"%u", static_cast<unsigned>(imports.UnresolvedCount));
+            emit(L"  Unresolved: ", reportLine,
+                 imports.UnresolvedCount == 0u ? good : bad);
+            swprintf_s(reportLine, L"%u", static_cast<unsigned>(imports.LookupErrors));
+            emit(L"  Lookup Errors: ", reportLine,
+                 imports.LookupErrors == 0u ? good : bad);
+            if (imports.DeferredCount != 0u) {
+                swprintf_s(reportLine, L"%S", imports.DeferredModule);
+                emit(L"  Pending: ", reportLine, bad);
+            }
+            Console::WriteRaw(L"\n");
+
+            emit(L"  Loader List: ", L"unmodified", good);
+            emit(L"  Bound Imports: ", L"invalidated", good);
+            emit(L"  Source: ", L"PEB / LDR (read-only)", good);
+            Console::WriteRaw(L"\n");
+
+            const bool reverted =
+                (imports.Flags & AMGER_IMPORT_FLAG_REVERTED) != 0u;
+            emit(L"  Rollback: ",
+                 reverted ? L"mapping reverted" : L"mapping retained",
+                 reverted ? good : bad);
+            emit(L"  Execution: ", L"deferred to Phase 5", bad);
             Console::WriteRaw(L"\n");
         }
     }

@@ -598,6 +598,9 @@ static NTSTATUS KickWorker(PVOID ContextParameter) {
         if (dispatch.RelocReport.Flags != 0u || dispatch.RelocReport.Status != 0u) {
             report.Relocation = dispatch.RelocReport;
         }
+        if (dispatch.ImportReport.Flags != 0u || dispatch.ImportReport.Status != 0u) {
+            report.Imports = dispatch.ImportReport;
+        }
         MemoryBarrier();
         RtlCopyMemory(reportArea, &report, sizeof(report));
         MemoryBarrier();

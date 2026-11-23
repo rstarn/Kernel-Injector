@@ -2,18 +2,20 @@
 #include "Reserve/Allocate.h"
 #include "Mapping/Sections.h"
 #include "Relocate/Fixups.h"
+#include "Imports/Binding/Resolve.h"
 
 /*
  * Phase 1 reserves the image, Phase 2 copies it, Phase 3 applies relocations,
- * then SectionsSeal promotes protections once. Phases 4 through 8 are still
- * deferred, so the image is reverted as R3 rollback before returning
- * NOT_IMPLEMENTED. Once the later phases land, that revert moves to the
- * failure path only.
+ * Phase 4 resolves imports, then SectionsSeal promotes protections once.
+ * Phases 5 through 8 are still deferred, so the image is reverted as R3
+ * rollback before returning NOT_IMPLEMENTED. Once the later phases land, that
+ * revert moves to the failure path only.
  */
 
 static VOID MarkReverted(const AMGER_INJECT_CONTEXT* Context,
                          PAMGER_MAP_REPORT MapReport,
                          PAMGER_RELOC_REPORT RelocReport,
+                         PAMGER_IMPORT_REPORT ImportReport,
                          NTSTATUS RevertStatus) {
     if (!NT_SUCCESS(RevertStatus)) {
         return;
@@ -23,10 +25,13 @@ static VOID MarkReverted(const AMGER_INJECT_CONTEXT* Context,
     }
     MapReport->Flags |= AMGER_MAP_FLAG_REVERTED;
 
-    /* A failure before FixupsApply must not publish an empty Relocations
-     * block just because the reservation was released afterwards. */
+    /* Do not publish an empty phase block just because the reservation was
+     * released after an earlier phase failed. */
     if ((RelocReport->Flags & AMGER_RELOC_FLAG_APPLIED) != 0u) {
         RelocReport->Flags |= AMGER_RELOC_FLAG_REVERTED;
+    }
+    if ((ImportReport->Flags & AMGER_IMPORT_FLAG_RESOLVED) != 0u) {
+        ImportReport->Flags |= AMGER_IMPORT_FLAG_REVERTED;
     }
 }
 
@@ -35,8 +40,10 @@ NTSTATUS InjectorExecute(
     uint64_t* OutRemoteBase) {
     AMGER_MAP_REPORT localMap;
     AMGER_RELOC_REPORT localReloc;
+    AMGER_IMPORT_REPORT localImport;
     PAMGER_MAP_REPORT mapReport;
     PAMGER_RELOC_REPORT relocReport;
+    PAMGER_IMPORT_REPORT importReport;
     uint64_t remoteBase = 0u;
     uint64_t delta;
     NTSTATUS status;
@@ -52,10 +59,13 @@ NTSTATUS InjectorExecute(
 
     RtlZeroMemory(&localMap, sizeof(localMap));
     RtlZeroMemory(&localReloc, sizeof(localReloc));
+    RtlZeroMemory(&localImport, sizeof(localImport));
     mapReport = (Context->MapReport != NULL) ? Context->MapReport : &localMap;
     relocReport = (Context->RelocReport != NULL) ? Context->RelocReport : &localReloc;
+    importReport = (Context->ImportReport != NULL) ? Context->ImportReport : &localImport;
     RtlZeroMemory(mapReport, sizeof(*mapReport));
     RtlZeroMemory(relocReport, sizeof(*relocReport));
+    RtlZeroMemory(importReport, sizeof(*importReport));
 
     if (Context->AllocReport != NULL) {
         RtlZeroMemory(Context->AllocReport, sizeof(*Context->AllocReport));
@@ -67,6 +77,8 @@ NTSTATUS InjectorExecute(
         mapReport->FailureStage = AMGER_MAP_STAGE_PARAMETERS;
         relocReport->Status = (uint32_t)STATUS_INVALID_PARAMETER;
         relocReport->FailureStage = AMGER_RELOC_STAGE_PARAMETERS;
+        importReport->Status = (uint32_t)STATUS_INVALID_PARAMETER;
+        importReport->FailureStage = AMGER_IMPORT_STAGE_PARAMETERS;
         return STATUS_INVALID_PARAMETER;
     }
 
@@ -96,7 +108,7 @@ NTSTATUS InjectorExecute(
     status = MapSectionsMap(Context->Image, processId, remoteBase, mapReport);
     if (!NT_SUCCESS(status)) {
         revertStatus = MapSectionsRevert(processId, remoteBase);
-        MarkReverted(Context, mapReport, relocReport, revertStatus);
+        MarkReverted(Context, mapReport, relocReport, importReport, revertStatus);
         return status;
     }
 
@@ -105,18 +117,26 @@ NTSTATUS InjectorExecute(
                          relocReport);
     if (!NT_SUCCESS(status)) {
         revertStatus = MapSectionsRevert(processId, remoteBase);
-        MarkReverted(Context, mapReport, relocReport, revertStatus);
+        MarkReverted(Context, mapReport, relocReport, importReport, revertStatus);
+        return status;
+    }
+
+    status = ResolveImports(Context->Image, processId, remoteBase,
+                            importReport);
+    if (!NT_SUCCESS(status)) {
+        revertStatus = MapSectionsRevert(processId, remoteBase);
+        MarkReverted(Context, mapReport, relocReport, importReport, revertStatus);
         return status;
     }
 
     status = SectionsSeal(Context->Image, processId, remoteBase, mapReport);
     if (!NT_SUCCESS(status)) {
         revertStatus = MapSectionsRevert(processId, remoteBase);
-        MarkReverted(Context, mapReport, relocReport, revertStatus);
+        MarkReverted(Context, mapReport, relocReport, importReport, revertStatus);
         return status;
     }
 
     revertStatus = MapSectionsRevert(processId, remoteBase);
-    MarkReverted(Context, mapReport, relocReport, revertStatus);
+    MarkReverted(Context, mapReport, relocReport, importReport, revertStatus);
     return STATUS_NOT_IMPLEMENTED;
 }

@@ -45,7 +45,7 @@ Execution: Thread Hijacking
 
 ## Parser
 
-Implemented in `Driver/Utilities/Parser/Format.h` and `Format.c`. Phase 0 (R21, R16) is complete and wired into `Dispatcher.c`. Phases 1, 2 and 3 are implemented in `Reserve/`, `Mapping/` and `Relocate/`; `InjectorExecute` orchestrates them but returns `STATUS_NOT_IMPLEMENTED` while phases 4–8 are deferred.
+Implemented in `Driver/Utilities/Parser/Format.h` and `Format.c`. Phase 0 (R21, R16) is complete and wired into `Dispatcher.c`. Phases 1 through 4 are implemented in `Reserve/`, `Mapping/`, `Relocate/` and `Imports/`; `InjectorExecute` orchestrates them but returns `STATUS_NOT_IMPLEMENTED` while phases 5–8 are deferred.
 
 API:
 - `PeParseAndValidate(Image, ImageSize, Out)` — returns STATUS_SUCCESS or STATUS_INVALID_PARAMETER; the descriptor is zeroed on entry.
@@ -71,7 +71,7 @@ Integration: `Dispatcher.c` includes `Format.h` and calls `PeParseAndValidate` i
 
 Verified: a user-mode harness against `Assets\Target.dll` accepted it — 6 sections, 16 directories, entry 0x14020, image base 0x180000000, SizeOfImage 0x1062000, headers 0x400, DllCharacteristics 0x160, RVA 0x14020 -> offset 0x13420. A 64-byte zero buffer was rejected. Driver builds `/W4 /kernel` with zero warnings; Verify.bat passes.
 
-The report now includes import/delay-import/export names and counts, forwarded and ordinal counts, ApiSet references, TLS callback count, security cookie RVA, guard flags, relocation type counts, directory presence flags and manifest detection. Table *contents* beyond those summaries remain deferred to Phase 4+.
+The report now includes import/delay-import/export names and counts, forwarded and ordinal counts, ApiSet references, TLS callback count, security cookie RVA, guard flags, relocation type counts, directory presence flags and manifest detection. Import table contents are resolved in Phase 4; the remaining table contents stay deferred to later phases.
 
 ## Allocation
 
@@ -110,10 +110,10 @@ Allocation:
   Remote Base: 0x0000020000000000
   Protection: READWRITE (reserve only)
 
-  Execution: deferred to Phase 2
+  Execution: deferred (phases 5-8)
 ```
 
-Verification order: test on `notepad` first with the client console. Until Phases 2–8 land, INJECT must still return `STATUS_NOT_IMPLEMENTED` — a successful allocation must not claim injection succeeded. Overwatch is tested only after the entire injector is finished.
+Verification order: test on `notepad` first with the client console. Until Phases 5–8 land, INJECT must still return `STATUS_NOT_IMPLEMENTED` — a successful allocation must not claim injection succeeded. Overwatch is tested only after the entire injector is finished.
 
 ## Mapping
 
@@ -160,7 +160,7 @@ Mapping:
   Page Groups: 7
 
   Rollback: mapping reverted
-  Execution: deferred to Phase 4
+  Execution: deferred to Phase 5
 ```
 
 Verification order: test on `notepad` first. INJECT must still return `STATUS_NOT_IMPLEMENTED`; the `Mapping:` block is the proof. Confirm with WinDbg `!vad` that the region is private and non-executable before promotion, then executable after. Overwatch is tested only after the entire injector is finished.
@@ -190,6 +190,40 @@ Report extension: `AMGER_RELOC_REPORT` (Status, FailureStage, RelocRva, RelocSiz
 Verified offline against `Assets\Target.dll`: 21 blocks, 1609 `DIR64` fixups, 11 `ABSOLUTE` skips, zero `HIGHLOW`, matching the parser's `RelocDir64Count`; the seal algorithm yields 7 page groups. Driver builds `/W4 /kernel` clean; `Verify.bat` passes.
 
 Verification order: test on `notepad` first. INJECT must still return `STATUS_NOT_IMPLEMENTED`; the `Relocations:` block is the proof. Overwatch is tested only after the entire injector is finished.
+
+## Imports
+
+R10, R22, R4, R14 and R9 are implemented in `Driver/Execution/Imports/Lookup.h/.c` and `Driver/Execution/Imports/Binding/Resolve.h/.c`; `Create.bat` compiles and links `Lookup.obj` and `Resolve.obj`. Folder and file names are one word each and differ from the folder (`Imports` / `Lookup`, `Binding` / `Resolve`).
+
+API:
+- `LookupInitialize(Out)` — reads PEB and obtains `Ldr` and `ApiSetMap`. Called once while attached.
+- `LookupResolveApiSet(...)` — resolves `api-ms-win` / `ext-ms-win` names through schema v6, v4 or v2.
+- `LookupFindModule(...)` — case-insensitive Unicode lookup in a private table (for Phase 5) and in `InLoadOrderModuleList`.
+- `LookupGetExport(...)` — name/ordinal export lookup with forwarder strings returned for the caller to follow.
+- `ResolveImports(Image, ProcessId, RemoteBase, Out)` — drives descriptors, IAT writes, delay descriptors and bound-import invalidation.
+
+Sequence:
+1. Attach to the target, read PEB via `ZwQueryInformationProcess(ProcessBasicInformation)`. x64 offsets: `PEB+0x18` = Ldr, `PEB+0x68` = ApiSetMap, `PEB_LDR_DATA+0x10` = load-order head, `LDR_DATA_TABLE_ENTRY+0x30` = DllBase, `+0x40` = SizeOfImage, `+0x58` = BaseDllName. Every user read is bounded to the x64 user range and guarded by SEH; list traversal is capped at 512 entries.
+2. ApiSet before name lookup. v6: lowercase name up to the last `-`, `hash = hash * HashMultiplier + towlower(wchar)`, binary-search the hash table, validate every namespace offset against the header `Size`, then read the host DLL from `ValueOffset/ValueLength`. v4/v2 use binary search on plain Unicode names.
+3. Module resolution: Unicode case-insensitive compare against `BaseDllName`, private table first, loader list second. Phase 5 can register manually mapped modules through `LookupRegisterPrivate` without rewriting this phase.
+4. Export resolution: parse directory 0 inside the module's `SizeOfImage`; names are matched case-sensitively, ordinals validated against `NumberOfFunctions`. A function RVA inside the export directory is a forwarder string (`MODULE.Symbol` or `MODULE.#ordinal`); follow it with a depth cap of 8.
+5. IAT: walk `OriginalFirstThunk` (fall back to `FirstThunk`); 8-byte entries, high bit = ordinal, otherwise 31-bit Hint/Name RVA. Write resolved addresses to `FirstThunk` through one MDL-locked system mapping. Cap 8192 thunks per descriptor.
+6. Delay imports: handle both RvaBased descriptors and legacy VA fields (subtract the preferred base). Resolve `ImportNameTable` and write `ImportAddressTable` plus the module-handle slot.
+7. Bound imports: zero data directory 11 in the mapped headers so stale binding data cannot be used.
+8. Missing modules are counted as deferred for Phase 5, never a hard failure. Name/ordinal exports missing from a present module are counted as unresolved.
+
+Detection posture against Eidolon/Warden (`.analysis`):
+- PEB, loader list, loaded modules and ApiSet schema are **read only**. No module is linked into the loader list, no PEB field is written, no loaded module is patched.
+- No VEH unlink, no INT3 trampoline change, no timing-hook neutralization: `FkCheck`, `VCheck`, `IntegrityCk`, Warden's first-chance VEH and the 24k runtime INT3 bytes in `Overwatch_Loader.dll` are untouched.
+- No user-mode API calls and no remote handles. Warden's user-mode hooks on `NtOpenProcess`, `NtReadVirtualMemory`, `NtQuerySystemInformation`, `NtCreateThreadEx` and `NtProtectVirtualMemory` are bypassed by kernel-origin `Zw` calls and passive reads.
+- IAT writes target only the private, already-committed image while it is RW; no protection change occurs here, so no new ETW-TI PROTECTVM event is generated before the single seal pass.
+- No brand strings, no API-set name literals emitted by the driver; ApiSet names come from the payload and the namespace schema.
+
+Report extension: `AMGER_IMPORT_REPORT` (Status, FailureStage, Modules, DelayedModules, FunctionsResolved, ByName, ByOrdinal, Forwarded, ApiSetRedirects, Unresolved, Deferred, LookupErrors, DeferredOrdinal, DeferredModule, DeferredSymbol, Flags, RemoteBase) joined the other phase reports; `sizeof(AMGER_PARSER_REPORT)` is 1384 bytes of 2048; `LookupErrors` keeps malformed-table failures visible instead of folding them into ordinary unresolved counts. Failure stages name PEB, ApiSet, MDL, descriptor, module, export, forward, IAT, delay and bound passes. The client renders an `Imports:` block in the same white-label / green-red style, including a `Pending:` line that names the exact module Phase 5 must provide when any import is deferred.
+
+Verified offline against `Assets\Target.dll`: 8 import modules, 170 imports by name, 1 by ordinal, 0 delay descriptors — matching the parser summary. Driver builds `/W4 /kernel` clean; `Verify.bat` passes.
+
+Verification order: test on `notepad` first. The `Imports:` block is the proof; a missing graphics DLL is reported as deferred, not as a failure. INJECT must still return `STATUS_NOT_IMPLEMENTED`. Overwatch is tested only after the entire injector is finished.
 
 # Injection: Manual Mapping
 
@@ -386,7 +420,7 @@ Entry Point: RVA ...
 Sections: ...
 
 Parser Scope: headers, sections, directories, entry point
-Deferred to Phase 4+: import/export/TLS/load-config table contents
+Deferred to Phase 5+: export/TLS/load-config table contents
 
 Load Configuration: Present/Not Present
 TLS Directory: Present/Not Present

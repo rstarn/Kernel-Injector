@@ -174,6 +174,43 @@ typedef struct _AMGER_RELOC_REPORT {
     uint64_t RemoteBase;
 } AMGER_RELOC_REPORT, * PAMGER_RELOC_REPORT;
 
+#define AMGER_IMPORT_FLAG_RESOLVED  0x00000001u
+#define AMGER_IMPORT_FLAG_DEFERRED  0x00000002u
+#define AMGER_IMPORT_FLAG_REVERTED  0x00000004u
+
+#define AMGER_IMPORT_STAGE_NONE       0u
+#define AMGER_IMPORT_STAGE_PARAMETERS 1u
+#define AMGER_IMPORT_STAGE_PEB        2u
+#define AMGER_IMPORT_STAGE_APISET     3u
+#define AMGER_IMPORT_STAGE_MDL        4u
+#define AMGER_IMPORT_STAGE_DESCRIPTOR 5u
+#define AMGER_IMPORT_STAGE_MODULE     6u
+#define AMGER_IMPORT_STAGE_EXPORT     7u
+#define AMGER_IMPORT_STAGE_FORWARD    8u
+#define AMGER_IMPORT_STAGE_IAT        9u
+#define AMGER_IMPORT_STAGE_DELAY      10u
+#define AMGER_IMPORT_STAGE_BOUND      11u
+
+typedef struct _AMGER_IMPORT_REPORT {
+    uint32_t Status;
+    uint32_t FailureStage;
+    uint32_t ModuleCount;
+    uint32_t DelayModuleCount;
+    uint32_t FunctionsResolved;
+    uint32_t ByNameCount;
+    uint32_t ByOrdinalCount;
+    uint32_t ForwardedCount;
+    uint32_t ApiSetRedirectCount;
+    uint32_t UnresolvedCount;
+    uint32_t DeferredCount;
+    uint32_t LookupErrors;
+    uint32_t DeferredOrdinal;
+    char DeferredModule[AMGER_REPORT_NAME_LENGTH];
+    char DeferredSymbol[AMGER_REPORT_NAME_LENGTH];
+    uint32_t Flags;
+    uint64_t RemoteBase;
+} AMGER_IMPORT_REPORT, * PAMGER_IMPORT_REPORT;
+
 typedef struct _AMGER_PARSER_REPORT {
     uint32_t Signature;
     uint32_t ParseStatus;
@@ -204,6 +241,7 @@ typedef struct _AMGER_PARSER_REPORT {
     AMGER_ALLOC_REPORT Allocation;
     AMGER_MAP_REPORT Mapping;
     AMGER_RELOC_REPORT Relocation;
+    AMGER_IMPORT_REPORT Imports;
     char ImportNames[AMGER_REPORT_MAX_MODULES][AMGER_REPORT_NAME_LENGTH];
     char ExportNames[AMGER_REPORT_MAX_MODULES][AMGER_REPORT_NAME_LENGTH];
 } AMGER_PARSER_REPORT, * PAMGER_PARSER_REPORT;
