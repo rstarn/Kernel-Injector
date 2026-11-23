@@ -76,7 +76,7 @@ if not defined AMGER_VCVARS (
     )
 )
 if not defined AMGER_VCVARS (
-    echo [Ameger] ERROR: vcvars64.bat not found. Install Visual Studio Build Tools with the v145 C++ toolset.
+    echo [Ameger] ERROR: vcvars64.bat not found. Install Visual Studio 2022 with the C++ toolset.
     set "AMGER_EXIT=1"
     goto :Finish
 )
@@ -237,6 +237,7 @@ goto :Finish
 
 :Finish
 rem Keep the window open on double-click so the build result can be read.
+rem Automation can set AMGER_NO_PAUSE=1 to skip the pause, which blocks scripts.
 echo.
-pause
+if /i "%AMGER_NO_PAUSE%"=="" pause
 exit /b %AMGER_EXIT%

@@ -1,5 +1,6 @@
+# The hardcoded WDK include path in the driver blocks is a local fallback; it
+# must match the WDK version actually installed (Create.bat discovers it).
 CompileFlags:
-  CompilationDatabase: .
   Add:
     - --target=x86_64-pc-windows-msvc
     - -fms-extensions
@@ -20,7 +21,6 @@ CompileFlags:
     - -D_AMD64_=1
     - -DAMD64=1
     - -D_WIN64=1
-    - -D_KERNEL_MODE=1
     - -DNTDDI_VERSION=0x0A000000
     - '-IC:\Program Files (x86)\Windows Kits\10\Include\10.0.28000.0\km'
 ---
@@ -31,6 +31,5 @@ CompileFlags:
     - -D_AMD64_=1
     - -DAMD64=1
     - -D_WIN64=1
-    - -D_KERNEL_MODE=1
     - -DNTDDI_VERSION=0x0A000000
     - '-IC:\Program Files (x86)\Windows Kits\10\Include\10.0.28000.0\km'

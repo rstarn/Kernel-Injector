@@ -130,6 +130,8 @@ typedef struct _AMGER_RUNTIME_STATE {
 
     uint64_t PdataRemote;
     uint32_t PdataEntries;
+    uint32_t PdataJobIndex;
+    BOOLEAN PdataQueued;
 
     uint64_t TlsCallbacks[AMGER_MAX_TLS_CALLBACKS];
     uint32_t TlsCallbackCount;
@@ -167,6 +169,10 @@ typedef struct _AMGER_RUNTIME_STATE {
 } AMGER_RUNTIME_STATE, * PAMGER_RUNTIME_STATE;
 
 static AMGER_RUNTIME_STATE g_state;
+/* Separate from g_state so RtlZeroMemory on entry cannot release a guard
+ * held by an in-flight initialization. */
+
+static volatile long g_initBusy = 0L;
 
 static NTSTATUS AllocatePrivatePage(PAMGER_RUNTIME_STATE state,
                                     uint64_t* out, ULONG protect);
@@ -341,9 +347,10 @@ static NTSTATUS ValidateLoadConfig(PAMGER_RUNTIME_STATE state) {
     for (size = 0u; size < 8u; ++size) {
         value |= ((uint64_t)field[size]) << (size * 8u);
     }
-    if (value == 0u) {
-        return Fail(state, AMGER_INIT_STAGE_LOAD_CONFIG, STATUS_INVALID_PARAMETER);
-    }
+    /* A zero GuardCFCheckFunctionPointer is the documented representation of
+     * "no CFG check pointer in this image". It is a valid value: RetargetCfg
+     * skips non-instrumented images and records the zero as CfgCheckBefore. */
+
     rva = value - state->Image->ImageBase;
     if (value < state->Image->ImageBase || rva >= state->Image->SizeOfImage) {
         /* On a CFG-instrumented image this field can hold the native address
@@ -409,6 +416,8 @@ static NTSTATUS InitCookie(PAMGER_RUNTIME_STATE state) {
 static NTSTATUS DetectActivation(PAMGER_RUNTIME_STATE state) {
     AMGER_PE_DIRECTORY resource = state->Image->Directories[AMGER_DIRECTORY_RESOURCE];
     uint32_t offset;
+
+    state->Report->Flags |= AMGER_INIT_FLAG_ACTIVATION;
 
     /* Measured result for the shipped payload: no resource directory means no
      * embedded manifest to activate. A present directory is reported as such;
@@ -614,6 +623,11 @@ static NTSTATUS InitTls(PAMGER_RUNTIME_STATE state) {
     if (!WriteProtectedCode(state, bitmap, bits, state->TlsBitsSize)) {
         return Fail(state, AMGER_INIT_STAGE_TLS_INDEX, STATUS_ACCESS_VIOLATION);
     }
+    /* Claim the bit for rollback as soon as the write succeeds. A failed
+     * read-back below still has to clear it, otherwise the target's PEB keeps
+     * a reserved TLS slot with no matching TEB data. */
+    state->TlsIndexValue = index;
+    state->TlsIndexAllocated = TRUE;
     {
         uint32_t verify[AMGER_TLS_EXPANSION_MAX / 32u];
         RtlZeroMemory(verify, sizeof(verify));
@@ -625,8 +639,6 @@ static NTSTATUS InitTls(PAMGER_RUNTIME_STATE state) {
     }
     state->TlsIndexAddress = Remote(state,
         (uint32_t)(indexAddress - state->Image->ImageBase));
-    state->TlsIndexValue = index;
-    state->TlsIndexAllocated = TRUE;
     state->TlsRaw = Remote(state, (uint32_t)(start - state->Image->ImageBase));
     state->TlsRawBytes = (uint32_t)(end - start);
     state->Report->TlsIndex = index;
@@ -753,14 +765,15 @@ static NTSTATUS PatchThreadSlots(PAMGER_RUNTIME_STATE state) {
                             continue;
                         }
                         if (array != 0u) {
-                            /* Preserve the documented 64 existing slots; do
-                             * not read past the end of the old array. */
+                            /* Preserve every existing slot below our index.
+                             * We claim the first free expansion bit, so all
+                             * other in-use indices are lower and must survive
+                             * the array replacement. needSlots is at most
+                             * AMGER_TLS_INDEX_MAX, so keep never exceeds the
+                             * 512-pointer page we install. */
 
-                            uint32_t keep = AMGER_TLS_MINIMUM * 8u;
+                            uint32_t keep = needSlots * 8u;
                             UCHAR* copy;
-                            if (keep > needSlots * 8u) {
-                                keep = needSlots * 8u;
-                            }
 #pragma warning(suppress : 4996)
                             copy = (UCHAR*)ExAllocatePoolWithTag(
                                 NonPagedPoolNx, keep, 'grmC');
@@ -1006,6 +1019,10 @@ static NTSTATUS FindThread(PAMGER_RUNTIME_STATE state, PETHREAD* out) {
     ULONG count;
     ULONG i;
     HANDLE tid = NULL;
+    uint32_t attempts = 0u;
+
+    /* Match the bounded growth used by PatchThreadSlots: a malformed size
+     * sequence must not grow the buffer without limit. */
 
     for (;;) {
 #pragma warning(suppress : 4996)
@@ -1021,6 +1038,9 @@ static NTSTATUS FindThread(PAMGER_RUNTIME_STATE state, PETHREAD* out) {
         buffer = NULL;
         if (status != STATUS_INFO_LENGTH_MISMATCH) {
             return status;
+        }
+        if (++attempts >= 4u || size > 0x1000000u) {
+            return STATUS_INSUFFICIENT_RESOURCES;
         }
         size *= 2u;
     }
@@ -1479,7 +1499,7 @@ static NTSTATUS ActivateDetour(PAMGER_RUNTIME_STATE state) {
                     STATUS_ACCESS_DENIED);
     }
     state->DetourInstalled = TRUE;
-    state->Report->DetourBytes = 13u;
+    state->Report->DetourBytes = j;
     state->Report->DetourAddress = state->HookStub;
     state->Report->Flags |= AMGER_INIT_FLAG_PC_DETOUR;
     return STATUS_SUCCESS;
@@ -1635,7 +1655,18 @@ NTSTATUS InitializePhase(const AMGER_INIT_CONTEXT* context) {
 
     if (context == NULL || context->Image == NULL ||
         context->Report == NULL || context->ProcessId == NULL) {
+        if (context != NULL && context->Report != NULL) {
+            context->Report->BuildId = AMGER_INIT_BUILD_ID;
+            context->Report->Status = (uint32_t)STATUS_INVALID_PARAMETER;
+            context->Report->FailureStage = AMGER_INIT_STAGE_PARAMETERS;
+        }
         return STATUS_INVALID_PARAMETER;
+    }
+    if (InterlockedCompareExchange(&g_initBusy, 1L, 0L) != 0L) {
+        context->Report->BuildId = AMGER_INIT_BUILD_ID;
+        context->Report->Status = (uint32_t)STATUS_DEVICE_BUSY;
+        context->Report->FailureStage = AMGER_INIT_STAGE_PARAMETERS;
+        return STATUS_DEVICE_BUSY;
     }
 
     RtlZeroMemory(state, sizeof(*state));
@@ -1651,7 +1682,8 @@ NTSTATUS InitializePhase(const AMGER_INIT_CONTEXT* context) {
 
     status = PsLookupProcessByProcessId(context->ProcessId, &state->Process);
     if (!NT_SUCCESS(status)) {
-        return Fail(state, AMGER_INIT_STAGE_PROCESS, status);
+        (void)Fail(state, AMGER_INIT_STAGE_PROCESS, status);
+        goto failure;
     }
     {
         uint64_t peb = (uint64_t)(uintptr_t)PsGetProcessPeb(state->Process);
@@ -1700,16 +1732,16 @@ NTSTATUS InitializePhase(const AMGER_INIT_CONTEXT* context) {
     {
         AMGER_PE_DIRECTORY pdata =
             state->Image->Directories[AMGER_DIRECTORY_EXCEPTION];
-        if (pdata.Rva != 0u && pdata.Size >= 12u) {
+        if (pdata.Rva != 0u && pdata.Size >= 12u && jobCount < AMGER_MAX_JOBS) {
             state->PdataRemote = Remote(state, pdata.Rva);
             state->PdataEntries = pdata.Size / 12u;
-            if (jobCount < AMGER_MAX_JOBS) {
-                jobs[jobCount].Function = state->RtlAddFunctionTable;
-                jobs[jobCount].Arg1 = state->PdataRemote;
-                jobs[jobCount].Arg2 = state->PdataEntries;
-                jobs[jobCount].Arg3 = context->RemoteBase;
-                ++jobCount;
-            }
+            state->PdataJobIndex = jobCount;
+            state->PdataQueued = TRUE;
+            jobs[jobCount].Function = state->RtlAddFunctionTable;
+            jobs[jobCount].Arg1 = state->PdataRemote;
+            jobs[jobCount].Arg2 = state->PdataEntries;
+            jobs[jobCount].Arg3 = context->RemoteBase;
+            ++jobCount;
         }
     }
 
@@ -1734,10 +1766,24 @@ NTSTATUS InitializePhase(const AMGER_INIT_CONTEXT* context) {
         status = RunJobs(state);
         if (!NT_SUCCESS(status)) goto failure;
     }
+    if (state->PdataQueued) {
+        /* RtlAddFunctionTable returns BOOLEAN in AL; the stub stores RAX at
+         * Result@+32. Read the low byte only, since the upper RAX bits are
+         * undefined for a BOOLEAN return. */
+        uint8_t result = 0u;
+        uint64_t address = state->DataPage + 8u +
+                           (uint64_t)state->PdataJobIndex * sizeof(AMGER_JOB) +
+                           32u;
+        if (!UserRead(state->Process, address, &result, sizeof(result)) ||
+            result == 0u) {
+            status = Fail(state, AMGER_INIT_STAGE_PDATA, STATUS_UNSUCCESSFUL);
+            goto failure;
+        }
+    }
     if (state->TlsCallbackCount != 0u) {
         state->Report->Flags |= AMGER_INIT_FLAG_TLS_CALLBACK;
     }
-    if (state->PdataRemote != 0u) {
+    if (state->PdataQueued) {
         state->Report->PdataTables = 1u;
         state->Report->PdataEntries = state->PdataEntries;
         state->Report->Flags |= AMGER_INIT_FLAG_PDATA;
@@ -1756,12 +1802,19 @@ failure:
     return state->Report->Status;
 }
 
+/* The deferred-phase rollback releases the entire private image VAD after
+ * this revert, so image-internal mutations (cookie, TLS index variable, CFG
+ * pointer and promoted EXEC protections) are discarded with the mapping. No
+ * per-field image restore is needed on that path; the ntdll detour and PEB/TEB
+ * structures are shared with the target and are restored explicitly below. */
+
 VOID InitializeRevert(const AMGER_INIT_CONTEXT* context) {
     PAMGER_RUNTIME_STATE state = &g_state;
     uint32_t bits[AMGER_TLS_EXPANSION_MAX / 32u];
 
     UNREFERENCED_PARAMETER(context);
     if (state->Process == NULL) {
+        InterlockedExchange(&g_initBusy, 0L);
         return;
     }
 
@@ -1831,4 +1884,5 @@ VOID InitializeRevert(const AMGER_INIT_CONTEXT* context) {
     ObDereferenceObject(state->Process);
     state->Process = NULL;
     state->Report->Flags |= AMGER_INIT_FLAG_REVERTED;
+    InterlockedExchange(&g_initBusy, 0L);
 }

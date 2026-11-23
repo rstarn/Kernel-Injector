@@ -5,10 +5,10 @@
 /* INJECT consumes the full payload contract: a real target, a bounded payload
  * at the fixed offset, only known option bits, and synchronous completion.
  * The bridge has already bounds-checked the range inside the registered MDL;
- * this layer validates the command-level semantics. Phases 1 through 5 are
- * linked; phases 6-8 are deferred, so a valid request reports NOT_IMPLEMENTED
- * after the image has been mapped, relocated, imported, dependency-bound and
- * sealed. */
+ * this layer validates the command-level semantics. Phases 0 through 6 are
+ * linked, including phase 6 Initialize (executed then rolled back); phases 7-8
+ * are deferred, so a valid request reports NOT_IMPLEMENTED after the image has
+ * been mapped, relocated, imported, dependency-bound, initialized and sealed. */
 
 static NTSTATUS ValidateInjectRequest(const AMGER_DISPATCH_CONTEXT* Context) {
     const AMGER_COMMAND_SNAPSHOT* snapshot = Context->Snapshot;

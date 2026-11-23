@@ -6,11 +6,12 @@
 /*
  * Rounds are bounded: map the modules the primary image is missing, rebind it,
  * then resolve each dependency's own imports and repeat for any new names.
- * A module already in the loading state is a cycle and is counted, never
- * recursed into. Repeated dependencies only increment the refcount.
+ * Mapping is synchronous and non-recursive, so no cycle can form; every
+ * repeated dependency increments the refcount.
  */
 
-#define AMGER_PENDING_MAX 64u
+/* Up to 16 modules x 9 deferred names can be collected in a single round. */
+#define AMGER_PENDING_MAX 256u
 
 typedef struct _AMGER_PENDING {
     char Names[AMGER_PENDING_MAX][AMGER_DEP_MAX_NAME];
@@ -88,15 +89,20 @@ static BOOLEAN PendingHas(const AMGER_PENDING* pending, const char* name) {
     return FALSE;
 }
 
-static VOID PendingAdd(AMGER_PENDING* pending, const char* name) {
-    if (pending->Count >= AMGER_PENDING_MAX || PendingHas(pending, name)) {
+static VOID PendingAdd(AMGER_DEP_GRAPH* graph, AMGER_PENDING* pending,
+                       const char* name) {
+    if (pending->Count >= AMGER_PENDING_MAX) {
+        ++graph->Report->Failures;
+        return;
+    }
+    if (PendingHas(pending, name)) {
         return;
     }
     CopyName(pending->Names[pending->Count], name);
     ++pending->Count;
 }
 
-static VOID CollectDeferred(AMGER_PENDING* pending,
+static VOID CollectDeferred(AMGER_DEP_GRAPH* graph, AMGER_PENDING* pending,
                             const AMGER_IMPORT_REPORT* report) {
     uint32_t index;
     if (report == NULL) {
@@ -104,11 +110,11 @@ static VOID CollectDeferred(AMGER_PENDING* pending,
     }
     if (report->DeferredModuleCount != 0u &&
         report->DeferredModule[0] != 0) {
-        PendingAdd(pending, report->DeferredModule);
+        PendingAdd(graph, pending, report->DeferredModule);
     }
     for (index = 0u; index < report->DeferredModuleCount &&
                       index < 8u; ++index) {
-        PendingAdd(pending, report->DeferredModules[index]);
+        PendingAdd(graph, pending, report->DeferredModules[index]);
     }
 }
 
@@ -200,15 +206,7 @@ static NTSTATUS ProcessPending(AMGER_DEP_GRAPH* graph,
         entry = GraphFind(graph, name, nameLength);
         if (entry != NULL) {
             if (entry->State == AMGER_DEP_STATE_LOADED) {
-                if (entry->Counted == 0u) {
-                    entry->Counted = 1u;
-                    ++entry->RefCount;
-                }
-                continue;
-            }
-            if (entry->State == AMGER_DEP_STATE_LOADING) {
-                ++graph->Report->Cycles;
-                continue;
+                ++entry->RefCount;
             }
             continue;
         }
@@ -228,6 +226,7 @@ static NTSTATUS ProcessPending(AMGER_DEP_GRAPH* graph,
         if (!LookupRegisterPrivate(entry->Name, entry->NameLength,
                                    entry->Base, entry->Size)) {
             ++graph->Report->Failures;
+            graph->Report->FailureStage = AMGER_DEP_STAGE_REGISTER;
             return STATUS_UNSUCCESSFUL;
         }
         ++graph->Report->ModulesRegistered;
@@ -299,13 +298,18 @@ NTSTATUS DependenciesResolve(
     graph->Report = out;
     out->PrimaryBase = primaryBase;
 
+    /* Mapping is synchronous and non-recursive: no entry stays LOADING on a
+     * later iteration, so no cycle can form. Cycles is the measured value 0. */
+
+    out->Cycles = 0u;
+
     for (round = 0u; round < AMGER_DEP_MAX_ROUNDS; ++round) {
         uint32_t before;
         AMGER_IMPORT_REPORT next;
 
         out->Rounds = round + 1u;
         out->FailureStage = AMGER_DEP_STAGE_ROUND;
-        CollectDeferred(pending, primaryImports);
+        CollectDeferred(graph, pending, primaryImports);
         before = graph->Count;
 
         status = ProcessPending(graph, pending, round);
@@ -341,7 +345,7 @@ NTSTATUS DependenciesResolve(
                 goto failed;
             }
             entry->ImportsResolved = dependencyImports.FunctionsResolved;
-            CollectDeferred(pending, &dependencyImports);
+            CollectDeferred(graph, pending, &dependencyImports);
         }
     }
 

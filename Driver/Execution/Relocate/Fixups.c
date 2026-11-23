@@ -82,8 +82,10 @@ NTSTATUS FixupsApply(
     RtlZeroMemory(Out, sizeof(*Out));
 
     if (Image == NULL || ProcessId == NULL || RemoteBase == 0u ||
-        Image->Base == NULL || Image->SizeOfImage == 0u ||
-        Image->NumberOfRvaAndSizes <= AMGER_BASE_RELOCATION_DIRECTORY) {
+        Image->Base == NULL || Image->SizeOfImage < 8u ||
+        Image->NumberOfSections > AMGER_PE_MAX_SECTIONS ||
+        Image->NumberOfRvaAndSizes <= AMGER_BASE_RELOCATION_DIRECTORY ||
+        Image->NumberOfRvaAndSizes > AMGER_PE_MAX_DIRECTORIES) {
         Out->Status = (uint32_t)STATUS_INVALID_PARAMETER;
         Out->FailureStage = AMGER_RELOC_STAGE_PARAMETERS;
         return STATUS_INVALID_PARAMETER;

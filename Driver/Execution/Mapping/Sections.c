@@ -19,16 +19,15 @@
  * wrong final protection and repeated protection events on the same page.
  */
 
-#define AMGER_PAGE_SIZE 0x1000u
 #define AMGER_PAGE_MASK 0x0FFFu
 
 #define AMGER_SCN_CODE  0x20000000u
 #define AMGER_SCN_READ  0x40000000u
 #define AMGER_SCN_WRITE 0x80000000u
 
-/* Two boundaries per section, plus the image start and end. */
+/* Two boundaries per section, plus image start, header end and image end. */
 
-#define AMGER_SEAL_MAX_BOUNDARIES (2u * AMGER_PE_MAX_SECTIONS + 2u)
+#define AMGER_SEAL_MAX_BOUNDARIES (2u * AMGER_PE_MAX_SECTIONS + 3u)
 
 typedef struct _AMGER_SEAL_RUN {
     uint32_t StartPage;
@@ -44,9 +43,15 @@ static ULONG ProtectionForSection(uint32_t characteristics) {
     if (!execute && !readable && !writable) {
         return PAGE_NOACCESS;
     }
+    if (execute && !readable && !writable) {
+        return PAGE_EXECUTE;
+    }
     if (execute) {
         return PAGE_EXECUTE_READ;
     }
+    /* Read+write and write-only both stay writable: writes are complete by
+     * the time the seal runs, but the pages must remain writable at runtime. */
+
     if (writable) {
         return PAGE_READWRITE;
     }
@@ -114,7 +119,10 @@ NTSTATUS MapSectionsMap(
     if (Image == NULL || ProcessId == NULL || RemoteBase == 0u ||
         Image->Base == NULL || Image->SizeOfImage == 0u ||
         Image->SizeOfHeaders == 0u || Image->SizeOfHeaders > Image->SizeOfImage ||
-        Image->NumberOfSections == 0u) {
+        Image->SizeOfHeaders > Image->Size ||
+        Image->NumberOfSections == 0u ||
+        Image->NumberOfSections > AMGER_PE_MAX_SECTIONS ||
+        Image->NumberOfRvaAndSizes > AMGER_PE_MAX_DIRECTORIES) {
         Out->Status = (uint32_t)STATUS_INVALID_PARAMETER;
         Out->FailureStage = AMGER_MAP_STAGE_PARAMETERS;
         return STATUS_INVALID_PARAMETER;
@@ -257,7 +265,9 @@ NTSTATUS SectionsSeal(
 
     if (Image == NULL || ProcessId == NULL || RemoteBase == 0u ||
         Image->SizeOfImage == 0u || Image->SizeOfHeaders == 0u ||
-        Image->SizeOfHeaders > Image->SizeOfImage) {
+        Image->SizeOfHeaders > Image->SizeOfImage ||
+        Image->NumberOfSections > AMGER_PE_MAX_SECTIONS ||
+        Image->NumberOfRvaAndSizes > AMGER_PE_MAX_DIRECTORIES) {
         Out->Status = (uint32_t)STATUS_INVALID_PARAMETER;
         Out->FailureStage = AMGER_MAP_STAGE_PARAMETERS;
         return STATUS_INVALID_PARAMETER;

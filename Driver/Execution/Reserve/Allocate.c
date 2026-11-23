@@ -2,9 +2,9 @@
 
 /*
  * ZwAllocateVirtualMemory requires PASSIVE_LEVEL and must be issued while
- * attached to the target process. KeStackAttachProcess raises to APC_LEVEL,
- * so only one short Zw call sits between attach and detach — Microsoft warns
- * that complex work while attached can deadlock asynchronous I/O.
+ * attached to the target process. The attach window must be kept short and
+ * must not block — Microsoft warns that complex work while attached can
+ * deadlock asynchronous I/O.
  *
  * MEM_RESERVE with PAGE_READWRITE creates a non-executable, uncommitted VAD.
  * That avoids the ETW-TI executable-allocation signal and leaves the VAD
@@ -68,7 +68,11 @@ NTSTATUS AllocateReleaseImage(
     SIZE_T size = 0u;
     NTSTATUS status;
 
-    if (ProcessId == NULL || Base == 0u) {
+    /* Release is idempotent: a zero base is a no-op, not an error. */
+    if (Base == 0u) {
+        return STATUS_SUCCESS;
+    }
+    if (ProcessId == NULL) {
         return STATUS_INVALID_PARAMETER;
     }
 

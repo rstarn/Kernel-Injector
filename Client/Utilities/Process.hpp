@@ -19,7 +19,9 @@ namespace Process {
 
 /* Returns true when the candidate image name satisfies the normalized query:
  * case-insensitive exact match, with or without a trailing ".exe" on either
- * side. Not a substring or fuzzy match; ambiguity is impossible by design. */
+ * side. Not a substring or fuzzy match. More than one running process can
+ * match the same query; FindIdByName resolves that ambiguity by choosing the
+ * lowest PID. */
 
 bool MatchesImageName(const std::wstring& normalizedQuery, const std::wstring& imageName);
 

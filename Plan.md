@@ -45,7 +45,7 @@ Execution: Thread Hijacking
 
 ## Parser
 
-Implemented in `Driver/Utilities/Parser/Format.h` and `Format.c`. Phase 0 (R21, R16) is complete and wired into `Dispatcher.c`. Phases 1 through 5 are implemented in `Reserve/`, `Mapping/`, `Relocate/`, `Imports/` and `Dependencies/`; `InjectorExecute` orchestrates them but returns `STATUS_NOT_IMPLEMENTED` while phases 6–8 are deferred.
+Implemented in `Driver/Utilities/Parser/Format.h` and `Format.c`. Phase 0 (R21, R16) is complete and wired into `Dispatcher.c`. Phases 1 through 6 are implemented in `Reserve/`, `Mapping/`, `Relocate/`, `Imports/`, `Dependencies/` and `Initialize/`; `InjectorExecute` orchestrates them but returns `STATUS_NOT_IMPLEMENTED` while phases 7–8 are deferred.
 
 API:
 - `PeParseAndValidate(Image, ImageSize, Out)` — returns STATUS_SUCCESS or STATUS_INVALID_PARAMETER; the descriptor is zeroed on entry.
@@ -71,7 +71,7 @@ Integration: `Dispatcher.c` includes `Format.h` and calls `PeParseAndValidate` i
 
 Verified: a user-mode harness against `Assets\Target.dll` accepted it — 6 sections, 16 directories, entry 0x14020, image base 0x180000000, SizeOfImage 0x1062000, headers 0x400, DllCharacteristics 0x160, RVA 0x14020 -> offset 0x13420. A 64-byte zero buffer was rejected. Driver builds `/W4 /kernel` with zero warnings; Verify.bat passes.
 
-The report now includes import/delay-import/export names and counts, forwarded and ordinal counts, ApiSet references, TLS callback count, security cookie RVA, guard flags, relocation type counts, directory presence flags and manifest detection. Import table contents are resolved in Phase 4; the remaining table contents stay deferred to later phases.
+The report now includes import and export names with counts, a delay-module count (delay names are not stored), forwarded and ordinal counts, ApiSet references, TLS callback count, security cookie RVA, guard flags, relocation type counts, directory presence flags and manifest detection. Import table contents are resolved in Phase 4; the remaining table contents are measured by later phases.
 
 ## Allocation
 
@@ -98,7 +98,7 @@ Detection-aware decisions (research-backed):
 
 Failure model: invalid PID, zero/oversized image, dead target or allocation failure returns a named NTSTATUS; no partial reservation survives. Release is idempotent on a zero/invalid base.
 
-Report extension: add allocation fields to the existing `AMGER_PARSER_REPORT` in the 2048-byte area (current size 1128, room remains). Client renders a second `Allocation:` block with white labels, white separators and green/red values, exactly like the parser block:
+Report extension: add allocation fields to the existing `AMGER_PARSER_REPORT` in the 4096-byte area (current size is measured by the report harness; ample room remains). Client renders a second `Allocation:` block with white labels, white separators and green/red values, exactly like the parser block:
 
 ```
 Allocation:
@@ -185,7 +185,7 @@ Detection-aware decisions:
 - No user-mode API chain, no remote handle, no `WriteProcessMemory`; the target is referenced with `PsLookupProcessByProcessId` only.
 - No string literal, no pool tag and no file-backed section: the descriptor and both reports stay on the stack.
 
-Report extension: `AMGER_RELOC_REPORT` (Status, FailureStage, RelocRva, RelocSize, Blocks, Fixups, DIR64, HIGHLOW, Skipped, Flags, Delta, RemoteBase) joined `Allocation` and `Mapping` in the 2048-byte report area. `sizeof(AMGER_PARSER_REPORT)` is 1256 bytes. The client renders a `Relocations:` block in the same white-label / green-red style. Mapping and Relocation also print `Failure Stage:` when Status is non-zero, so the exact failing kernel pass is visible.
+Report extension: `AMGER_RELOC_REPORT` (Status, FailureStage, RelocRva, RelocSize, Blocks, Fixups, DIR64, HIGHLOW, Skipped, Flags, Delta, RemoteBase) joined `Allocation` and `Mapping` in the 4096-byte report area. The exact `sizeof(AMGER_PARSER_REPORT)` is measured by the report harness; the static assert in `Protocol.h` enforces the 4096-byte bound. The client renders a `Relocations:` block in the same white-label / green-red style. Mapping and Relocation also print `Failure Stage:` when Status is non-zero, so the exact failing kernel pass is visible.
 
 Verified offline against `Assets\Target.dll`: 21 blocks, 1609 `DIR64` fixups, 11 `ABSOLUTE` skips, zero `HIGHLOW`, matching the parser's `RelocDir64Count`; the seal algorithm yields 7 page groups. Driver builds `/W4 /kernel` clean; `Verify.bat` passes.
 
@@ -204,7 +204,7 @@ API:
 
 Sequence:
 1. Attach to the target, read PEB via `ZwQueryInformationProcess(ProcessBasicInformation)`. x64 offsets: `PEB+0x18` = Ldr, `PEB+0x68` = ApiSetMap, `PEB_LDR_DATA+0x10` = load-order head, `LDR_DATA_TABLE_ENTRY+0x30` = DllBase, `+0x40` = SizeOfImage, `+0x58` = BaseDllName. Every user read is bounded to the x64 user range and guarded by SEH; list traversal is capped at 512 entries.
-2. ApiSet before name lookup. v6: lowercase name up to the last `-`, `hash = hash * HashMultiplier + towlower(wchar)`, binary-search the hash table, validate every namespace offset against the header `Size`, then read the host DLL from `ValueOffset/ValueLength`. v4/v2 use binary search on plain Unicode names.
+2. ApiSet before name lookup. v6: lowercase name up to the last `-`, `hash = hash * HashMultiplier + lower(wchar)`, binary-search the hash table, validate every namespace offset against the header `Size`, then read the host DLL from `ValueOffset/ValueLength`. Lowercasing is ASCII-only (`A`–`Z`), which covers every `api-`/`ext-` contract name. v4 uses binary search on plain Unicode names; v2 uses the documented sorted `DLLHOSTDESCRIPTOR` table (`NameOffset +0`, `StringLength +4`, `OffsetDllRedirector +8`) with the two-slot `REDIRECTION` layout (host in the second slot).
 3. Module resolution: Unicode case-insensitive compare against `BaseDllName`, private table first, loader list second. Phase 5 can register manually mapped modules through `LookupRegisterPrivate` without rewriting this phase.
 4. Export resolution: parse directory 0 inside the module's `SizeOfImage`; names are matched case-sensitively, ordinals validated against `NumberOfFunctions`. A function RVA inside the export directory is a forwarder string (`MODULE.Symbol` or `MODULE.#ordinal`); follow it with a depth cap of 8.
 5. IAT: walk `OriginalFirstThunk` (fall back to `FirstThunk`); 8-byte entries, high bit = ordinal, otherwise 31-bit Hint/Name RVA. Write resolved addresses to `FirstThunk` through one MDL-locked system mapping. Cap 8192 thunks per descriptor.
@@ -219,7 +219,7 @@ Detection posture against Eidolon/Warden (`.analysis`):
 - IAT writes target only the private, already-committed image while it is RW; no protection change occurs here, so no new ETW-TI PROTECTVM event is generated before the single seal pass.
 - No brand strings, no API-set name literals emitted by the driver; ApiSet names come from the payload and the namespace schema.
 
-Report extension: `AMGER_IMPORT_REPORT` (Status, FailureStage, Modules, DelayedModules, FunctionsResolved, ByName, ByOrdinal, Forwarded, ApiSetRedirects, Unresolved, Deferred, LookupErrors, DeferredOrdinal, DeferredModule, DeferredSymbol, DeferredModuleCount, DeferredModules, Flags, RemoteBase) joined the other phase reports; `sizeof(AMGER_PARSER_REPORT)` is 1992 bytes of 2048; `LookupErrors` keeps malformed-table failures visible instead of folding them into ordinary unresolved counts. Failure stages name PEB, ApiSet, MDL, descriptor, module, export, forward, IAT, delay and bound passes. The client renders an `Imports:` block in the same white-label / green-red style, including a `Pending:` line that names the exact module Phase 5 must provide when any import is deferred.
+Report extension: `AMGER_IMPORT_REPORT` (Status, FailureStage, Modules, DelayedModules, FunctionsResolved, ByName, ByOrdinal, Forwarded, ApiSetRedirects, Unresolved, Deferred, LookupErrors, DeferredOrdinal, DeferredModule, DeferredSymbol, DeferredModuleCount, DeferredModules, Flags, RemoteBase) joined the other phase reports; the static assert in `Protocol.h` keeps `sizeof(AMGER_PARSER_REPORT)` within the 4096-byte area (the report harness prints the exact value). `LookupErrors` keeps malformed-table failures visible instead of folding them into ordinary unresolved counts. Failure stages name PEB, ApiSet, MDL, descriptor, module, export, forward, IAT, delay and bound passes. The client renders an `Imports:` block in the same white-label / green-red style, including a `Pending:` line that names the exact module Phase 5 must provide when any import is deferred.
 
 Verified offline against `Assets\Target.dll`: 8 import modules, 170 imports by name, 1 by ordinal, 0 delay descriptors — matching the parser summary. Driver builds `/W4 /kernel` clean; `Verify.bat` passes.
 
@@ -253,6 +253,20 @@ Detection posture against Eidolon/Warden (`.analysis`):
 Report extension: `AMGER_DEP_REPORT` (Status, FailureStage, ModulesMapped, ModulesLoaded, BytesRead, Rounds, Cycles, Failures, Flags, PrimaryBase, BaseCount, MappedNameCount, Bases, MappedNames, FileOpens, ModulesRegistered, DeferredBefore, DeferredAfter, ReboundFunctions, DependencyImportsResolved, LoaderEntriesBefore, LoaderEntriesAfter) joined the other phase reports; the mapped bases are published so the injector can release every dependency on rollback. The client renders a `Dependencies:` block with measured evidence only — file opens, bytes read, manually mapped and registered counts, rounds/failures/cycles, deferred-before/after, rebound primary functions, dependency imports resolved, loader-entry counts before/after, and a mapped module name/base list. No hardcoded design claims remain in that block; failure stages cover file, parse, allocate, map, relocate, register, import and round limits.
 
 Verification order: test on `notepad` first. Expect `Imports:` to reach `Functions Resolved: 171` with no `Pending:` line, and `Dependencies:` to show the graphics DLLs mapped from System32. INJECT must still return `STATUS_NOT_IMPLEMENTED`. Overwatch is tested only after the entire injector is finished.
+
+## Initialize
+
+Phase 6 (R12, R26, R6, R1, R5, R25, R23, R15, R19) is implemented in `Driver/Execution/Initialize/Runtime.h/.c`; `Create.bat` compiles and links `Runtime.obj`. It prepares only state a manually mapped module needs before its entry point runs, and publishes a measured `AMGER_INIT_REPORT` in the shared report area.
+
+API:
+- `InitializePhase(const AMGER_INIT_CONTEXT* Context)` — validates load config and GuardFlags, seeds the security cookie and its complement, allocates a TLS index from the PEB `RTL_BITMAP` at `PEB+0x78` (with `TlsExpansionBitmap` at `PEB+0x238` and real index `64 + bitPos` when the primary bitmap is full), installs per-thread TLS template blocks and TEB slots, resolves `RtlAddFunctionTable`/`RtlPcToFileHeader`, retargets the CFG guard-check pointer, detours `ntdll!RtlPcToFileHeader`, registers `.pdata`, and runs process-attach TLS callbacks plus `RtlAddFunctionTable` through a kernel-queued user APC whose stub lives in a private RX page.
+- `InitializeRevert(const AMGER_INIT_CONTEXT* Context)` — restores the ntdll detour, clears the TLS bitmap bit, restores per-thread TEB slots, frees private TLS pages and the template, and releases the APC pages when no APC can still run.
+
+All COW-sensitive writes use one `ZwProtectVirtualMemory(PAGE_READWRITE)` -> `MmCopyVirtualMemory` -> protection-restore path. No RWX mapping is ever created, and no MDL alias bypasses copy-on-write. New-thread TLS callbacks (R25) stay deferred: a system-wide thread-notify callback caused a bugcheck `0x7f` in testing; durable per-current-thread TLS is retained instead.
+
+Report fields (`AMGER_INIT_REPORT`) are all read back from the target or taken from calls that returned a status: load-config RVA/size/struct size/GuardFlags, cookie RVA and low half, activation-context status, TLS callback count, index and bitmap size/buffer/bits, raw byte count, patched-thread count, routine counts, APC runs/failures/started/completion/boosters, detour address and byte count, `.pdata` table/entry counts, CFG pointer before/after, and failure stage. `BuildId` is retained in the report for stale-driver diagnosis but is not displayed by the client.
+
+Verification order: test on `notepad` first. The `Initialization:` block is the proof; INJECT must still return `STATUS_NOT_IMPLEMENTED` because phases 7–8 are deferred. Overwatch is tested only after the entire injector is finished.
 
 # Injection: Manual Mapping
 
@@ -346,7 +360,7 @@ The canonical execution list is in `Execution: Thread Hijacking` above. This tab
 - No Event Log imports -- DbgPrintEx only.
 - Seqlock snapshot (detects accidental races).
 - Explicit DACL -- SYSTEM + Administrators only.
-- XOR-encoded diagnostic labels (no plaintext strings).
+- XOR-encoded status/log diagnostic labels in the client image (the client still renders plaintext UI strings and the driver keeps a few DbgPrintEx diagnostic formats).
 - Machine-derived device name and per-machine IOCTLs (no fixed artifact).
 
 # Stealth Techniques: Anti-Analysis

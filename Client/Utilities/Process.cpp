@@ -10,10 +10,9 @@ std::wstring NormalizeQuery(const std::wstring& rawQuery) {
     if (begin == std::wstring::npos) {
         return L"";
     }
-    size_t end = rawQuery.find_last_not_of(L" \t\r\n\"'");
-    if (end == std::wstring::npos) {
-        end = rawQuery.size() - 1u;
-    }
+    /* The early return above guarantees at least one non-trimmable character,
+     * so end cannot be npos here. */
+    const size_t end = rawQuery.find_last_not_of(L" \t\r\n\"'");
     std::wstring result = rawQuery.substr(begin, end - begin + 1u);
     for (wchar_t& character : result) {
         character = static_cast<wchar_t>(std::towlower(character));

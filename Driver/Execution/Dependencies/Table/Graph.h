@@ -5,9 +5,9 @@
  * Graph.h - Phase 5 dependency table (R18, R28).
  *
  * Tracks each dependency by name with a refcount, state and parent depth so a
- * module is mapped once, repeated dependencies only bump the refcount, and a
- * cycle is skipped instead of recursed into. Holds the raw image bytes only
- * for the duration of this phase; every buffer is freed before seal.
+ * module is mapped once and every repeated dependency bumps the refcount.
+ * Mapping is synchronous and non-recursive, so no cycle can form. Holds the
+ * raw image bytes for rebind rounds; every buffer is freed before seal.
  */
 
 #include <wdm.h>
@@ -34,7 +34,6 @@ typedef struct _AMGER_DEP_ENTRY {
     uint64_t Base;
     uint32_t Size;
     uint32_t RefCount;
-    uint32_t Counted;
     uint32_t ImportsResolved;
     uint32_t State;
     uint32_t Depth;

@@ -43,7 +43,7 @@ typedef struct _AMGER_PRIVATE_MODULE {
     uint32_t Size;
 } AMGER_PRIVATE_MODULE, * PAMGER_PRIVATE_MODULE;
 
-static AMGER_PRIVATE_MODULE g_privateModules[64];
+static AMGER_PRIVATE_MODULE g_privateModules[AMGER_LOOKUP_MAX_MODULES];
 static uint32_t g_privateCount = 0u;
 
 static BOOLEAN UserRead(uint64_t address, PVOID destination, SIZE_T length) {
@@ -195,9 +195,6 @@ static NTSTATUS ResolveApiSetV6(uint64_t ns, uint32_t nsSize,
         Read32(headerBytes) != 6u) {
         return STATUS_INVALID_PARAMETER;
     }
-    if (nsSize < sizeof(headerBytes)) {
-        return STATUS_INVALID_PARAMETER;
-    }
     count = Read32(headerBytes + 12u);
     entryOffset = Read32(headerBytes + 16u);
     hashesOffset = Read32(headerBytes + 20u);
@@ -312,8 +309,14 @@ static NTSTATUS ResolveApiSetV4V2(uint64_t ns, uint32_t nsSize,
                      entryBytes, entryStride, nsSize)) {
             return STATUS_INVALID_PARAMETER;
         }
-        nameOffset = Read32(entryBytes + 4u);
-        nameByteLength = Read32(entryBytes + 8u);
+        /* v4 entry: Flags, NameOffset(+4), NameLength(+8).
+         * v2 DLLHOSTDESCRIPTOR: OffsetDllString(+0), StringLength(+4),
+         * OffsetDllRedirector(+8). */
+
+        nameOffset = version == 4u ? Read32(entryBytes + 4u)
+                                   : Read32(entryBytes);
+        nameByteLength = version == 4u ? Read32(entryBytes + 8u)
+                                       : Read32(entryBytes + 4u);
         if ((nameByteLength & 1u) != 0u ||
             nameByteLength / 2u > AMGER_LOOKUP_MAX_NAME - 1u) {
             return STATUS_INVALID_PARAMETER;
@@ -848,7 +851,7 @@ BOOLEAN LookupRegisterPrivate(
     AMGER_PRIVATE_MODULE* entry;
     if (name == NULL || nameLength == 0u ||
         nameLength > AMGER_LOOKUP_MAX_NAME ||
-        g_privateCount >= 64u) {
+        g_privateCount >= AMGER_LOOKUP_MAX_MODULES) {
         return FALSE;
     }
     entry = &g_privateModules[g_privateCount++];

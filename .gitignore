@@ -1,7 +1,7 @@
 # Build artifacts (Phase 1)
 # Ignore only the generated contents of Build/Output/, not the directory itself:
-# Client.exe and Driver.sys are the shipped binaries; Objects\ holds all Create.bat
-# and MSBuild intermediates (including Objects\Client\Release\).
+# Client.exe and Driver.sys are the shipped binaries; Objects\ holds the flat
+# .obj files written directly by Create.bat (no MSBuild subdirectories).
 Build/Output/Client.exe
 Build/Output/Driver.sys
 Build/Output/Objects/

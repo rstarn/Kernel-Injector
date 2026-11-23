@@ -18,6 +18,8 @@
 #define PE_OPTIONAL_MIN_SIZE    112u
 #define PE_MAX_IMAGE_BYTES      (512u * 1024u * 1024u)
 
+#define PE_MAX_REPORT_TLS_CALLBACKS 16u
+
 #define PE_FILE_DLL             0x2000u
 #define PE_FILE_32BIT_MACHINE   0x0100u
 #define PE_FILE_BYTES_REVERSED  0x8080u
@@ -298,7 +300,14 @@ NTSTATUS PeRvaToOffset(
 #define PE_DIR_DELAY_IMPORT 13u
 
 #define PE_GUARD_CF         0x4000u
-#define PE_GUARD_CET_COMPAT 0x00100000u
+
+/* GuardFlags 0x00100000 is IMAGE_GUARD_RETPOLINE_PRESENT, not CET. */
+
+#define PE_GUARD_RETPOLINE  0x00100000u
+
+#define PE_DEBUG_DIRECTORY_SIZE             28u
+#define PE_DEBUG_TYPE_EX_DLLCHARACTERISTICS 20u
+#define PE_DLLCHARACTERISTICS_EX_CET_COMPAT 0x0001u
 
 static BOOLEAN ReadRvaU16(const AMGER_PE_IMAGE* Image, uint32_t Rva, uint16_t* Out) {
     uint32_t offset;
@@ -438,7 +447,7 @@ VOID PeBuildReport(
             if (callbacks >= Image->ImageBase &&
                 callbacks - Image->ImageBase < Image->SizeOfImage) {
                 callbacksRva = (uint32_t)(callbacks - Image->ImageBase);
-                for (index = 0u; index < AMGER_REPORT_MAX_MODULES; ++index) {
+                for (index = 0u; index < PE_MAX_REPORT_TLS_CALLBACKS; ++index) {
                     uint64_t value = 0u;
                     if (!ReadRvaU64(Image, callbacksRva, &value) ||
                         value == 0u) {
@@ -451,7 +460,38 @@ VOID PeBuildReport(
         }
     }
     if (Image->Directories[PE_DIR_DEBUG].Size != 0u) {
+        uint32_t debugRva = Image->Directories[PE_DIR_DEBUG].Rva;
+        uint32_t debugRemaining = Image->Directories[PE_DIR_DEBUG].Size;
         Out->Flags |= AMGER_REPORT_FLAG_DEBUG;
+        while (debugRemaining >= PE_DEBUG_DIRECTORY_SIZE) {
+            uint32_t entryOffset;
+            uint32_t type;
+            uint32_t dataSize;
+            uint32_t dataRva;
+            uint32_t dataFileOffset;
+            uint16_t dllCharacteristics = 0u;
+            if (!NT_SUCCESS(PeRvaToOffset(Image, debugRva,
+                                          PE_DEBUG_DIRECTORY_SIZE, &entryOffset))) {
+                break;
+            }
+            type = ReadLe32(Image->Base + entryOffset + 12u);
+            dataSize = ReadLe32(Image->Base + entryOffset + 16u);
+            dataRva = ReadLe32(Image->Base + entryOffset + 20u);
+            dataFileOffset = ReadLe32(Image->Base + entryOffset + 24u);
+            if (type == PE_DEBUG_TYPE_EX_DLLCHARACTERISTICS &&
+                dataSize >= 2u && dataRva != 0u) {
+                if ((UINT64)dataFileOffset + 2u > (UINT64)Image->Size ||
+                    !ReadRvaU16(Image, dataRva, &dllCharacteristics)) {
+                    break;
+                }
+                if ((dllCharacteristics & PE_DLLCHARACTERISTICS_EX_CET_COMPAT) != 0u) {
+                    Out->Flags |= AMGER_REPORT_FLAG_CET_COMPAT;
+                    break;
+                }
+            }
+            debugRva += PE_DEBUG_DIRECTORY_SIZE;
+            debugRemaining -= PE_DEBUG_DIRECTORY_SIZE;
+        }
     }
     if (Image->Directories[PE_DIR_RESOURCE].Size != 0u) {
         Out->Flags |= AMGER_REPORT_FLAG_RESOURCE;
@@ -492,8 +532,12 @@ VOID PeBuildReport(
             }
             entries = (blockSize - 8u) / 2u;
             for (position = 0u; position < entries; ++position) {
-                const uint16_t value = ReadLe16(Image->Base + offset + 8u + position * 2u);
-                const uint16_t type = (uint16_t)(value >> 12);
+                uint16_t value = 0u;
+                uint16_t type;
+                if (!ReadRvaU16(Image, blockRva + 8u + position * 2u, &value)) {
+                    break;
+                }
+                type = (uint16_t)(value >> 12);
                 if (type == 10u) {
                     ++Out->RelocDir64Count;
                 } else if (type == 3u) {
@@ -515,9 +559,6 @@ VOID PeBuildReport(
     }
     if ((Image->DllCharacteristics & PE_GUARD_CF) != 0u) {
         Out->Flags |= AMGER_REPORT_FLAG_CFG;
-    }
-    if ((Out->GuardFlags & PE_GUARD_CET_COMPAT) != 0u) {
-        Out->Flags |= AMGER_REPORT_FLAG_CET_COMPAT | AMGER_REPORT_FLAG_CET;
     }
 
     if (Image->Directories[PE_DIR_IMPORT].Size != 0u) {

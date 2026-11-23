@@ -4,9 +4,10 @@
 
 /*
  * File access uses only kernel handles, so ObRegisterCallbacks does not fire
- * and no user-mode API chain is created. The raw buffer is freed as soon as
- * the image is mapped; only the committed private image remains until the
- * final seal pass. A missing or malformed file fails the dependency cleanly.
+ * and no user-mode API chain is created. The raw buffer is retained for later
+ * rebind rounds: Graph.c re-runs ResolveImports against entry->Image, which
+ * points into those bytes. It is freed only by GraphFreeBuffers before seal.
+ * A missing or malformed file fails the dependency cleanly.
  */
 
 static VOID BuildSystemPath(WCHAR* path, SIZE_T capacity, const WCHAR* name) {
@@ -14,7 +15,7 @@ static VOID BuildSystemPath(WCHAR* path, SIZE_T capacity, const WCHAR* name) {
     SIZE_T index;
     SIZE_T nameLength = 0u;
 
-    while (name[nameLength] != 0 && nameLength < AMGER_DEP_MAX_NAME) {
+    while (nameLength < AMGER_DEP_MAX_NAME && name[nameLength] != 0) {
         ++nameLength;
     }
     for (index = 0u; index + 1u < capacity && prefix[index] != 0; ++index) {
@@ -87,6 +88,8 @@ NTSTATUS ImagesMapDependency(AMGER_DEP_GRAPH* graph, AMGER_DEP_ENTRY* entry) {
      * ExAllocatePool2 needs a newer NTDDI than this driver targets; suppress
      * only the deprecation diagnostic at this call site. */
 
+    graph->Report->FailureStage = AMGER_DEP_STAGE_ALLOCATE;
+
 #pragma warning(suppress : 4996)
     raw = (PUCHAR)ExAllocatePoolWithTag(PagedPool, rawSize, AMGER_POOL_TAG_RAW);
     if (raw == NULL) {
@@ -102,7 +105,7 @@ NTSTATUS ImagesMapDependency(AMGER_DEP_GRAPH* graph, AMGER_DEP_ENTRY* entry) {
         ExFreePool(raw);
         return NT_SUCCESS(status) ? STATUS_UNSUCCESSFUL : status;
     }
-    graph->Report->BytesRead += (uint32_t)rawSize;
+    graph->Report->BytesRead += rawSize;
 
     graph->Report->FailureStage = AMGER_DEP_STAGE_PARSE;
     RtlZeroMemory(&entry->Image, sizeof(entry->Image));

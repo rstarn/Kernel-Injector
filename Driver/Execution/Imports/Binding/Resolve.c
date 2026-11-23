@@ -92,6 +92,16 @@ static VOID AnsiToWide(const char* ansi, WCHAR* wide, SIZE_T capacity) {
     wide[index] = 0;
 }
 
+/* Switches the reported stage around one fine-grained operation and returns
+ * the enclosing stage, so a successful step restores the caller's phase. A
+ * failing step leaves the operation's stage in place for the failure report. */
+
+static uint32_t SetFailureStage(PAMGER_RESOLVE_STATE state, uint32_t stage) {
+    uint32_t previous = state->Report->FailureStage;
+    state->Report->FailureStage = stage;
+    return previous;
+}
+
 static NTSTATUS ResolveSymbol(
     PAMGER_RESOLVE_STATE state,
     const char* dllName,
@@ -110,6 +120,7 @@ static NTSTATUS ResolveSymbol(
     AMGER_EXPORT_RESULT result;
     NTSTATUS status;
     uint64_t address;
+    uint32_t previousStage;
 
     if (dllName == NULL || outAddress == NULL) {
         return STATUS_INVALID_PARAMETER;
@@ -143,7 +154,7 @@ static NTSTATUS ResolveSymbol(
 
     if (!LookupFindModule(&state->Lookup, moduleName, moduleLength,
                           &moduleBase, &moduleSize)) {
-        /* Record the first unresolved import verbatim so the client can name
+        /* Record the first deferred import verbatim so the client can name
          * the dependency Phase 5 must provide instead of only showing a count. */
 
         if (state->Report->DeferredCount == 0u) {
@@ -169,7 +180,9 @@ static NTSTATUS ResolveSymbol(
                 ++state->Report->DeferredModuleCount;
             }
         }
-        state->Report->UnresolvedCount++;
+        /* A missing module is deferred only; a missing export on a present
+         * module is counted as unresolved below. */
+
         state->Report->DeferredCount++;
         return STATUS_NOT_FOUND;
     }
@@ -177,18 +190,21 @@ static NTSTATUS ResolveSymbol(
         *outModuleBase = moduleBase;
     }
 
+    previousStage = SetFailureStage(state, AMGER_IMPORT_STAGE_EXPORT);
     status = LookupGetExport(moduleBase, moduleSize, symbolName, ordinal,
                              byOrdinal, &result);
     if (!NT_SUCCESS(status)) {
         state->Report->UnresolvedCount++;
         return status;
     }
+    state->Report->FailureStage = previousStage;
     if (!result.Forwarded) {
         *outAddress = result.Address;
         return STATUS_SUCCESS;
     }
 
     state->Report->ForwardedCount++;
+    previousStage = SetFailureStage(state, AMGER_IMPORT_STAGE_FORWARD);
     if (state->Depth >= AMGER_MAX_FORWARD_DEPTH) {
         return STATUS_INVALID_PARAMETER;
     }
@@ -197,6 +213,7 @@ static NTSTATUS ResolveSymbol(
                            result.ByOrdinal, &address, NULL);
     --state->Depth;
     if (NT_SUCCESS(status)) {
+        state->Report->FailureStage = previousStage;
         *outAddress = address;
     }
     return status;
@@ -238,10 +255,15 @@ static NTSTATUS ResolveDescriptorTable(
             iatRva = Read32(descriptor + 12u);
             lookupRva = Read32(descriptor + 16u);
             if ((attributes & 1u) == 0u) {
-                nameRva -= (uint32_t)image->ImageBase;
-                handleRva -= (uint32_t)image->ImageBase;
-                iatRva -= (uint32_t)image->ImageBase;
-                lookupRva -= (uint32_t)image->ImageBase;
+                /* Legacy descriptors store absolute VAs built from the
+                 * image's preferred base; subtract it to recover the RVA. */
+
+                const uint32_t preferredBase = (uint32_t)image->ImageBase;
+
+                nameRva -= preferredBase;
+                handleRva -= preferredBase;
+                iatRva -= preferredBase;
+                lookupRva -= preferredBase;
             }
         } else {
             lookupRva = Read32(descriptor);
@@ -281,6 +303,7 @@ static NTSTATUS ResolveDescriptorTable(
             uint32_t lookupOffset = lookupRva + thunkIndex * 8u;
             uint32_t iatOffset = iatRva + thunkIndex * 8u;
             NTSTATUS status;
+            uint32_t previousStage;
             char symbol[AMGER_LOOKUP_MAX_SYMBOL];
             uint16_t ordinal = 0u;
             BOOLEAN byOrdinal = FALSE;
@@ -319,7 +342,9 @@ static NTSTATUS ResolveDescriptorTable(
                 }
                 continue;
             }
+            previousStage = SetFailureStage(state, AMGER_IMPORT_STAGE_IAT);
             Write64(state->System + iatOffset, address);
+            state->Report->FailureStage = previousStage;
             state->Report->FunctionsResolved++;
             if (byOrdinal) {
                 state->Report->ByOrdinalCount++;
@@ -332,7 +357,9 @@ static NTSTATUS ResolveDescriptorTable(
                 /* The delay helper reads this slot; use the exact module that
                  * supplied the resolved export, including ApiSet hosts. */
 
+                previousStage = SetFailureStage(state, AMGER_IMPORT_STAGE_IAT);
                 Write64(state->System + handleRva, moduleBase);
+                state->Report->FailureStage = previousStage;
             }
         }
     }

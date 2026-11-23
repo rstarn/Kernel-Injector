@@ -78,9 +78,10 @@ static SIZE_T g_sharedRegionSize = 0u;
 static PFILE_OBJECT g_ownerFile = NULL;
 static BOOLEAN g_connectionClosing = FALSE;
 
-/* Terminal, monotonic shutdown marker. Only DriverUnload sets it, under
- * g_regionLock, when the device and its symbolic link are being destroyed.
- * Client exit never sets it: the device must stay openable by name. */
+/* Terminal, monotonic shutdown marker. Set under g_regionLock by
+ * BridgeBeginShutdown, which both DriverUnload and the owner-only UNLOAD IOCTL
+ * call when the device and its symbolic link are being destroyed. Client exit
+ * never sets it: the device must stay openable by name. */
 
 static BOOLEAN g_terminalShutdown = FALSE;
 static ULONG g_ioctlRegister = 0u;
@@ -173,7 +174,8 @@ static NTSTATUS CleanupDispatch(PDEVICE_OBJECT DeviceObject, PIRP Irp) {
 /* CLOSE runs after CLEANUP and after outstanding IRPs are finished. It only
  * releases the caller's region. The device object and symbolic link are never
  * touched here: they remain openable so the next client can connect by name.
- * Only DriverUnload enters terminal shutdown and destroys the bootstrap. */
+ * Only DriverUnload and the owner-only UNLOAD IOCTL enter terminal shutdown
+ * (BridgeBeginShutdown) and destroy the bootstrap via the teardown worker. */
 
 static NTSTATUS CloseDispatch(PDEVICE_OBJECT DeviceObject, PIRP Irp) {
     PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(Irp);
@@ -510,10 +512,12 @@ static NTSTATUS KickWorker(PVOID ContextParameter) {
      * leave a value from an earlier command visible to the client. */
 
     {
-        PAMGER_RESULT_CONTROL result =
-            (PAMGER_RESULT_CONTROL)&context->Header->Reserved[0];
-        result->ResultValue = 0u;
-        RtlZeroMemory((PVOID)&context->Header->Reserved[4], 60u);
+        /* Clear Reserved[4..63], which includes the result slot at [8..15];
+         * sizeof(AMGER_RESULT_CONTROL) - 4 leaves the seqlock at [0..3] intact.
+         * A separate ResultValue store here would only be zeroed again below. */
+
+        RtlZeroMemory((PVOID)&context->Header->Reserved[4],
+                      sizeof(AMGER_RESULT_CONTROL) - 4);
         RtlZeroMemory((PUCHAR)g_sharedSystemAddress + g_sharedRegionSize -
                           AMGER_LOG_AREA_SIZE - AMGER_REPORT_AREA_SIZE,
                       AMGER_REPORT_AREA_SIZE);
@@ -617,7 +621,11 @@ static NTSTATUS KickWorker(PVOID ContextParameter) {
              dispatch.StageId, (uint32_t)status, 0u);
     LogStage(g_sharedSystemAddress, g_sharedRegionSize,
              (uint16_t)AMGER_LOG_ID_RESULT, (uint32_t)status, 0u);
-    context->Header->Status = context->Status;
+
+    /* The final, non-pending status is published by BridgeDispatch's
+     * WriteStatusWorker once this worker returns, under the same mutex and
+     * while the operation reference is still held; no direct write is needed. */
+
     return status;
 }
 
@@ -632,7 +640,10 @@ NTSTATUS BridgeRegisterIoControl(
     KeInitializeSpinLock(&g_logLock);
     KeInitializeMutex(&g_commandMutex, 0);
     KeInitializeMutex(&g_teardownMutex, 0);
-    IoInitializeRemoveLock(&g_removeLock, (ULONG)'grmA', 0u, 0u);
+
+    /* Neutral four-space tag; the build plan forbids brand strings in tags. */
+
+    IoInitializeRemoveLock(&g_removeLock, 0x20202020u, 0u, 0u);
 
     /* Reset the one-shot teardown claim at initialization, not in the worker:
      * clearing it in the worker would allow a second queue of this same static

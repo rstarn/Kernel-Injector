@@ -10,8 +10,9 @@
  * All offsets are read byte-wise so no user-mode IMAGE_* layout is assumed.
  * Inputs: kernel-mapped image bytes and their exact size.
  * Outputs: a zeroed-then-populated AMGER_PE_IMAGE on STATUS_SUCCESS.
- * Failure modes: STATUS_INVALID_PARAMETER for every malformed field; the
- * descriptor is left zeroed and must not be used.
+ * Failure modes: STATUS_INVALID_PARAMETER for every malformed field. The
+ * descriptor is zeroed on entry but may be partially populated on failure and
+ * must not be used; it is only valid on STATUS_SUCCESS.
  */
 
 #include <wdm.h>

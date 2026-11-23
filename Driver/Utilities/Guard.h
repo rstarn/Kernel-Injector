@@ -35,9 +35,4 @@ NTSTATUS GuardExecute(
     PVOID Context,
     BOOLEAN ExpectProbeFault);
 
-/* Begin/end markers for inline guarded regions that must return directly. */
-
-#define AMGER_SEH_BEGIN __try {
-#define AMGER_SEH_END } __except (EXCEPTION_EXECUTE_HANDLER) { return STATUS_UNSUCCESSFUL; }
-
 #endif /* AMGER_GUARD_H */

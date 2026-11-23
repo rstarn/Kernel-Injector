@@ -91,6 +91,7 @@
   <ItemGroup>
     <ClInclude Include="$(ProjectDir)..\..\Client\Interface\Console.hpp" />
     <ClInclude Include="$(ProjectDir)..\..\Client\Utilities\Process.hpp" />
+    <ClInclude Include="$(ProjectDir)..\..\Client\Utilities\Lexicon.hpp" />
     <ClInclude Include="$(ProjectDir)..\..\Client\Transport\Channel.hpp" />
     <ClInclude Include="$(ProjectDir)..\..\Shared\Protocol.h" />
   </ItemGroup>

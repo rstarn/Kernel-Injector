@@ -33,6 +33,12 @@
 
 namespace {
 
+/* STATUS_NOT_IMPLEMENTED is the driver's live answer while the deferred
+ * injector phases are not wired in. Named so the deferred-execution wording
+ * below does not depend on a raw NTSTATUS literal. */
+
+constexpr uint32_t kStatusNotImplemented = 0xC0000002u;
+
 std::wstring AsciiList(const char names[][AMGER_REPORT_NAME_LENGTH], uint32_t count) {
     std::wstring result;
     for (uint32_t index = 0u; index < count && index < AMGER_REPORT_MAX_MODULES; ++index) {
@@ -366,8 +372,6 @@ void InjectScreen(Session& session) {
         Console::WriteLine(L"Device did not answer the command.", Console::Brush::LightRed);
     } else if (status == AMGER_CLIENT_BAD_ARGUMENTS) {
         Console::WriteLine(L"Payload was invalid or too large.", Console::Brush::LightRed);
-    } else if (status == AMGER_STATUS_PENDING) {
-        Console::WriteLine(L"Payload could not be delivered.", Console::Brush::LightRed);
     } else {
         wchar_t text[96] = {};
         swprintf_s(text, L"0x%08X (%s)", status, StatusName(status));
@@ -384,7 +388,7 @@ void InjectScreen(Session& session) {
         const Console::Brush good = Console::Brush::LightGreen;
         const Console::Brush bad = Console::Brush::LightRed;
         const wchar_t* executionText =
-            status == 0xC0000002u ? L"not performed" : L"not reached";
+            status == kStatusNotImplemented ? L"not performed" : L"not reached";
 
         const auto emit = [](const wchar_t* label, const wchar_t* value,
                              Console::Brush brush) {
@@ -393,6 +397,10 @@ void InjectScreen(Session& session) {
             Console::WriteRaw(L"\n");
         };
         const auto emitList = [](const wchar_t* label, const std::wstring& text) {
+            /* "none" is the empty-list fallback from AsciiList, not a measured
+             * name. Paint it neutrally so it is not mistaken for a real value. */
+            const Console::Brush brush = text == L"none" ? Console::Brush::Gray
+                                                        : Console::Brush::LightGreen;
             Console::WriteText(label, Console::Brush::White);
             for (size_t index = 0u; index < text.size(); ++index) {
                 if (text[index] == L',') {
@@ -401,8 +409,7 @@ void InjectScreen(Session& session) {
                         ++index;
                     }
                 } else {
-                    Console::WriteText(std::wstring(1u, text[index]),
-                                       Console::Brush::LightGreen);
+                    Console::WriteText(std::wstring(1u, text[index]), brush);
                 }
             }
             Console::WriteRaw(L"\n");
@@ -420,7 +427,13 @@ void InjectScreen(Session& session) {
         emit(L"  Status: ", reportLine, parser.ParseStatus == 0u ? good : bad);
         Console::WriteRaw(L"\n");
 
-        emit(L"  Architecture: ", L"x64 (x86 and PE32 rejected)", good);
+        /* Parse success implies AMD64/PE32+: the parser rejects other machine
+         * types and PE32. A failed or empty parse cannot support that claim. */
+        const bool architectureVerified =
+            parser.ParseStatus == 0u && parser.SectionCount != 0u;
+        emit(L"  Architecture: ",
+             architectureVerified ? L"x64 (PE32+, AMD64 only)" : L"unverified",
+             architectureVerified ? good : bad);
         swprintf_s(reportLine, L"0x%08X | Image Base: 0x%016llX", parser.PeOffset,
                    static_cast<unsigned long long>(parser.ImageBase));
         emit(L"  PE Offset: ", reportLine, good);
@@ -465,15 +478,16 @@ void InjectScreen(Session& session) {
         Console::WriteRaw(L"\n");
         swprintf_s(reportLine, L"%u", static_cast<unsigned>(parser.DirectoryCount));
         emit(L"  Data Directories: ", reportLine, parser.DirectoryCount != 0u ? good : bad);
-        emit(L"  Directory Count: ", reportLine, parser.DirectoryCount != 0u ? good : bad);
         Console::WriteRaw(L"\n");
 
+        /* The CET flag describes the image's PE-declared CET compatibility,
+         * not a measured process mitigation state. */
         swprintf_s(reportLine, L"%s | CFG: %s",
-                   StateText(parser.Flags, AMGER_REPORT_FLAG_CET),
+                   StateText(parser.Flags, AMGER_REPORT_FLAG_CET_COMPAT),
                    StateText(parser.Flags, AMGER_REPORT_FLAG_CFG));
-        const bool hardened = (parser.Flags & AMGER_REPORT_FLAG_CET) != 0u &&
+        const bool hardened = (parser.Flags & AMGER_REPORT_FLAG_CET_COMPAT) != 0u &&
                               (parser.Flags & AMGER_REPORT_FLAG_CFG) != 0u;
-        emit(L"  CET: ", reportLine, hardened ? good : bad);
+        emit(L"  CET Compat: ", reportLine, hardened ? good : bad);
         swprintf_s(reportLine, L"0x%08X | Headers Size: 0x%08X",
                    parser.SizeOfImage, parser.SizeOfHeaders);
         emit(L"  Image Size: ", reportLine, good);
@@ -585,8 +599,9 @@ void InjectScreen(Session& session) {
             const bool sealed = (map.Flags & AMGER_MAP_FLAG_PROTECTED) != 0u;
             emit(L"  Commit: ", committed ? L"read/write" : L"not committed",
                  committed ? good : bad);
-            emit(L"  Protections: ",
-                 sealed ? L"applied (no RWX)" : L"pending (image still writable)",
+            /* Flag-derived state only: no rendered field measures the actual
+             * page protections. PageGroups is reported separately below. */
+            emit(L"  Protections: ", sealed ? L"applied" : L"pending",
                  sealed ? good : bad);
             swprintf_s(reportLine, L"%u", static_cast<unsigned>(map.PageGroups));
             emit(L"  Page Groups: ", reportLine, sealed ? good : bad);
@@ -749,7 +764,8 @@ void InjectScreen(Session& session) {
             emit(L"  Dependency Imports: ", reportLine, good);
             Console::WriteRaw(L"\n");
 
-            swprintf_s(reportLine, L"0x%08X", dep.BytesRead);
+            swprintf_s(reportLine, L"0x%016llX",
+                       static_cast<unsigned long long>(dep.BytesRead));
             emit(L"  Bytes Read: ", reportLine, good);
             swprintf_s(reportLine, L"%u", static_cast<unsigned>(dep.FileOpens));
             emit(L"  File Opens: ", reportLine, good);
@@ -1054,6 +1070,9 @@ void UnloadScreen(Session& session) {
     Console::WriteLine(client.DevicePath(), Console::Brush::LightCyan);
 
     const bool unloaded = client.Unload();
+    /* Surface dispatcher records for the unload IOCTL, as InjectScreen and
+     * StatusScreen already do for their commands. */
+    PrintLogs(client.DrainLogs());
     client.Disconnect();
     if (unloaded) {
         Console::WriteLine(L"Device and name removed. Re-map before reconnecting.",

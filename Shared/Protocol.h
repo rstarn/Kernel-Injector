@@ -80,6 +80,8 @@
 #define AMGER_LOG_ID_UNLOAD_OWNER     13u
 #define AMGER_LOG_ID_SNAPSHOT_RETRY   14u
 #define AMGER_LOG_ID_PAYLOAD_IMAGE    15u
+/* Reserved for Phase 8 (Execute): process, mapping and donor-thread stages. */
+
 #define AMGER_LOG_ID_INJECT_PROCESS   16u
 #define AMGER_LOG_ID_INJECT_MAPPING   17u
 #define AMGER_LOG_ID_INJECT_THREAD    18u
@@ -114,7 +116,8 @@ typedef struct _AMGER_RESULT_CONTROL {
 #define AMGER_REPORT_FLAG_MANIFEST      0x00000100u
 #define AMGER_REPORT_FLAG_CFG           0x00000200u
 #define AMGER_REPORT_FLAG_CET_COMPAT    0x00000400u
-#define AMGER_REPORT_FLAG_CET           0x00000800u
+/* CET process-mitigation state is a Phase 8 (R24/R27) measurement; it is not
+ * published by the parser, so no flag is reserved for it here. */
 
 #define AMGER_ALLOC_FLAG_RESERVED   0x00000001u
 #define AMGER_ALLOC_FLAG_RELEASED   0x00000002u
@@ -245,7 +248,7 @@ typedef struct _AMGER_DEP_REPORT {
     uint32_t FailureStage;
     uint32_t ModulesMapped;
     uint32_t ModulesLoaded;
-    uint32_t BytesRead;
+    uint64_t BytesRead;
     uint32_t Rounds;
     uint32_t Cycles;
     uint32_t Failures;

@@ -7,8 +7,10 @@
  * Contract: interprets one kernel-local command snapshot plus the validated
  * system mapping of its payload, and returns its NTSTATUS through OutStatus.
  * PING and STATUS are implemented. INJECT validates, parses, reserves, maps,
- * relocates, resolves imports and seals the image, then reports NOT_IMPLEMENTED
- * while phases 6-8 are deferred; EJECT remains unimplemented.
+ * relocates, resolves imports, binds dependencies, runs phase 6 Initialize
+ * (then rolls it back) and seals the image; phases 0-6 are implemented and
+ * phases 7-8 remain deferred, so a valid inject still reports NOT_IMPLEMENTED.
+ * EJECT remains unimplemented.
  * Inputs: dispatch context (snapshot + payload mapping) and output status.
  * Outputs: NTSTATUS mirrored in *OutStatus on every path.
  * Failure modes: null arguments produce STATUS_INVALID_PARAMETER without
