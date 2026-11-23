@@ -174,9 +174,10 @@ typedef struct _AMGER_RELOC_REPORT {
     uint64_t RemoteBase;
 } AMGER_RELOC_REPORT, * PAMGER_RELOC_REPORT;
 
-#define AMGER_IMPORT_FLAG_RESOLVED  0x00000001u
-#define AMGER_IMPORT_FLAG_DEFERRED  0x00000002u
-#define AMGER_IMPORT_FLAG_REVERTED  0x00000004u
+#define AMGER_IMPORT_FLAG_RESOLVED      0x00000001u
+#define AMGER_IMPORT_FLAG_DEFERRED      0x00000002u
+#define AMGER_IMPORT_FLAG_REVERTED      0x00000004u
+#define AMGER_IMPORT_FLAG_BOUND_CLEARED 0x00000008u
 
 #define AMGER_IMPORT_STAGE_NONE       0u
 #define AMGER_IMPORT_STAGE_PARAMETERS 1u
@@ -207,9 +208,53 @@ typedef struct _AMGER_IMPORT_REPORT {
     uint32_t DeferredOrdinal;
     char DeferredModule[AMGER_REPORT_NAME_LENGTH];
     char DeferredSymbol[AMGER_REPORT_NAME_LENGTH];
+    uint32_t DeferredModuleCount;
+    char DeferredModules[8u][AMGER_REPORT_NAME_LENGTH];
     uint32_t Flags;
     uint64_t RemoteBase;
 } AMGER_IMPORT_REPORT, * PAMGER_IMPORT_REPORT;
+
+#define AMGER_DEP_FLAG_MAPPED    0x00000001u
+#define AMGER_DEP_FLAG_REVERTED  0x00000002u
+
+#define AMGER_DEP_REPORT_MAX_BASES 16u
+#define AMGER_DEP_REPORT_MAX_NAMES 4u
+
+#define AMGER_DEP_STAGE_NONE       0u
+#define AMGER_DEP_STAGE_PARAMETERS 1u
+#define AMGER_DEP_STAGE_FILE       2u
+#define AMGER_DEP_STAGE_PARSE      3u
+#define AMGER_DEP_STAGE_ALLOCATE   4u
+#define AMGER_DEP_STAGE_MAP        5u
+#define AMGER_DEP_STAGE_RELOCATE   6u
+#define AMGER_DEP_STAGE_REGISTER   7u
+#define AMGER_DEP_STAGE_IMPORT     8u
+#define AMGER_DEP_STAGE_ROUND      9u
+
+typedef struct _AMGER_DEP_REPORT {
+    uint32_t Status;
+    uint32_t FailureStage;
+    uint32_t ModulesMapped;
+    uint32_t ModulesLoaded;
+    uint32_t BytesRead;
+    uint32_t Rounds;
+    uint32_t Cycles;
+    uint32_t Failures;
+    uint32_t Flags;
+    uint64_t PrimaryBase;
+    uint32_t BaseCount;
+    uint32_t MappedNameCount;
+    uint64_t Bases[AMGER_DEP_REPORT_MAX_BASES];
+    char MappedNames[AMGER_DEP_REPORT_MAX_NAMES][AMGER_REPORT_NAME_LENGTH];
+    uint32_t FileOpens;
+    uint32_t ModulesRegistered;
+    uint32_t DeferredBefore;
+    uint32_t DeferredAfter;
+    uint32_t ReboundFunctions;
+    uint32_t DependencyImportsResolved;
+    uint32_t LoaderEntriesBefore;
+    uint32_t LoaderEntriesAfter;
+} AMGER_DEP_REPORT, * PAMGER_DEP_REPORT;
 
 typedef struct _AMGER_PARSER_REPORT {
     uint32_t Signature;
@@ -242,6 +287,7 @@ typedef struct _AMGER_PARSER_REPORT {
     AMGER_MAP_REPORT Mapping;
     AMGER_RELOC_REPORT Relocation;
     AMGER_IMPORT_REPORT Imports;
+    AMGER_DEP_REPORT Dependencies;
     char ImportNames[AMGER_REPORT_MAX_MODULES][AMGER_REPORT_NAME_LENGTH];
     char ExportNames[AMGER_REPORT_MAX_MODULES][AMGER_REPORT_NAME_LENGTH];
 } AMGER_PARSER_REPORT, * PAMGER_PARSER_REPORT;

@@ -62,6 +62,17 @@ static BOOLEAN ReadString(PUCHAR source, uint32_t available,
     return FALSE;
 }
 
+static BOOLEAN AsciiEqual(const char* left, const char* right) {
+    while (*left != 0 && *right != 0) {
+        if (*left != *right) {
+            return FALSE;
+        }
+        ++left;
+        ++right;
+    }
+    return *left == *right;
+}
+
 static VOID CopyAscii(char* destination, SIZE_T capacity, const char* source) {
     SIZE_T index;
     if (capacity == 0u) {
@@ -141,6 +152,21 @@ static NTSTATUS ResolveSymbol(
                       sizeof(state->Report->DeferredSymbol),
                       byOrdinal ? "" : symbolName);
             state->Report->DeferredOrdinal = byOrdinal ? (uint32_t)ordinal : 0u;
+        }
+        {
+            uint32_t slot;
+            BOOLEAN present = FALSE;
+            for (slot = 0u; slot < state->Report->DeferredModuleCount; ++slot) {
+                if (AsciiEqual(state->Report->DeferredModules[slot], dllName)) {
+                    present = TRUE;
+                    break;
+                }
+            }
+            if (!present && state->Report->DeferredModuleCount < 8u) {
+                CopyAscii(state->Report->DeferredModules[state->Report->DeferredModuleCount],
+                          AMGER_REPORT_NAME_LENGTH, dllName);
+                ++state->Report->DeferredModuleCount;
+            }
         }
         state->Report->UnresolvedCount++;
         state->Report->DeferredCount++;
@@ -359,7 +385,6 @@ NTSTATUS ResolveImports(
     if (!NT_SUCCESS(status)) {
         goto done;
     }
-    LookupResetPrivate();
 
     out->FailureStage = AMGER_IMPORT_STAGE_MDL;
     mdl = IoAllocateMdl((PVOID)(uintptr_t)remoteBase, image->SizeOfImage,
@@ -372,6 +397,7 @@ NTSTATUS ResolveImports(
         MmProbeAndLockPages(mdl, UserMode, IoWriteAccess);
         locked = TRUE;
     }
+#pragma warning(suppress : 6320) /* deliberate: probe fault maps to a status */
     __except (EXCEPTION_EXECUTE_HANDLER) {
         status = (NTSTATUS)GetExceptionCode();
     }
@@ -417,6 +443,7 @@ NTSTATUS ResolveImports(
             goto done;
         }
         Write64(system + boundOffset, 0u);
+        out->Flags |= AMGER_IMPORT_FLAG_BOUND_CLEARED;
     }
 
     if (out->DeferredCount != 0u) {

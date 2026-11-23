@@ -45,7 +45,7 @@ Execution: Thread Hijacking
 
 ## Parser
 
-Implemented in `Driver/Utilities/Parser/Format.h` and `Format.c`. Phase 0 (R21, R16) is complete and wired into `Dispatcher.c`. Phases 1 through 4 are implemented in `Reserve/`, `Mapping/`, `Relocate/` and `Imports/`; `InjectorExecute` orchestrates them but returns `STATUS_NOT_IMPLEMENTED` while phases 5–8 are deferred.
+Implemented in `Driver/Utilities/Parser/Format.h` and `Format.c`. Phase 0 (R21, R16) is complete and wired into `Dispatcher.c`. Phases 1 through 5 are implemented in `Reserve/`, `Mapping/`, `Relocate/`, `Imports/` and `Dependencies/`; `InjectorExecute` orchestrates them but returns `STATUS_NOT_IMPLEMENTED` while phases 6–8 are deferred.
 
 API:
 - `PeParseAndValidate(Image, ImageSize, Out)` — returns STATUS_SUCCESS or STATUS_INVALID_PARAMETER; the descriptor is zeroed on entry.
@@ -110,10 +110,10 @@ Allocation:
   Remote Base: 0x0000020000000000
   Protection: READWRITE (reserve only)
 
-  Execution: deferred (phases 5-8)
+  Execution: deferred (phases 6-8)
 ```
 
-Verification order: test on `notepad` first with the client console. Until Phases 5–8 land, INJECT must still return `STATUS_NOT_IMPLEMENTED` — a successful allocation must not claim injection succeeded. Overwatch is tested only after the entire injector is finished.
+Verification order: test on `notepad` first with the client console. Until Phases 6–8 land, INJECT must still return `STATUS_NOT_IMPLEMENTED` — a successful allocation must not claim injection succeeded. Overwatch is tested only after the entire injector is finished.
 
 ## Mapping
 
@@ -160,7 +160,7 @@ Mapping:
   Page Groups: 7
 
   Rollback: mapping reverted
-  Execution: deferred to Phase 5
+  Execution: deferred to Phase 6
 ```
 
 Verification order: test on `notepad` first. INJECT must still return `STATUS_NOT_IMPLEMENTED`; the `Mapping:` block is the proof. Confirm with WinDbg `!vad` that the region is private and non-executable before promotion, then executable after. Overwatch is tested only after the entire injector is finished.
@@ -219,11 +219,40 @@ Detection posture against Eidolon/Warden (`.analysis`):
 - IAT writes target only the private, already-committed image while it is RW; no protection change occurs here, so no new ETW-TI PROTECTVM event is generated before the single seal pass.
 - No brand strings, no API-set name literals emitted by the driver; ApiSet names come from the payload and the namespace schema.
 
-Report extension: `AMGER_IMPORT_REPORT` (Status, FailureStage, Modules, DelayedModules, FunctionsResolved, ByName, ByOrdinal, Forwarded, ApiSetRedirects, Unresolved, Deferred, LookupErrors, DeferredOrdinal, DeferredModule, DeferredSymbol, Flags, RemoteBase) joined the other phase reports; `sizeof(AMGER_PARSER_REPORT)` is 1384 bytes of 2048; `LookupErrors` keeps malformed-table failures visible instead of folding them into ordinary unresolved counts. Failure stages name PEB, ApiSet, MDL, descriptor, module, export, forward, IAT, delay and bound passes. The client renders an `Imports:` block in the same white-label / green-red style, including a `Pending:` line that names the exact module Phase 5 must provide when any import is deferred.
+Report extension: `AMGER_IMPORT_REPORT` (Status, FailureStage, Modules, DelayedModules, FunctionsResolved, ByName, ByOrdinal, Forwarded, ApiSetRedirects, Unresolved, Deferred, LookupErrors, DeferredOrdinal, DeferredModule, DeferredSymbol, DeferredModuleCount, DeferredModules, Flags, RemoteBase) joined the other phase reports; `sizeof(AMGER_PARSER_REPORT)` is 1992 bytes of 2048; `LookupErrors` keeps malformed-table failures visible instead of folding them into ordinary unresolved counts. Failure stages name PEB, ApiSet, MDL, descriptor, module, export, forward, IAT, delay and bound passes. The client renders an `Imports:` block in the same white-label / green-red style, including a `Pending:` line that names the exact module Phase 5 must provide when any import is deferred.
 
 Verified offline against `Assets\Target.dll`: 8 import modules, 170 imports by name, 1 by ordinal, 0 delay descriptors — matching the parser summary. Driver builds `/W4 /kernel` clean; `Verify.bat` passes.
 
 Verification order: test on `notepad` first. The `Imports:` block is the proof; a missing graphics DLL is reported as deferred, not as a failure. INJECT must still return `STATUS_NOT_IMPLEMENTED`. Overwatch is tested only after the entire injector is finished.
+
+## Dependencies
+
+R18 and R28 are implemented in `Driver/Execution/Dependencies/Images.h/.c` and `Graph.h/.c`; `Create.bat` compiles and links `Images.obj` and `Graph.obj`. Folder and file names are one word each and differ from the folder (`Dependencies` / `Images`, `Dependencies` / `Graph`).
+
+API:
+- `ImagesMapDependency(...)` — kernel-only file acquisition, PE validation, reservation, section mapping and relocation of one dependency.
+- `DependenciesResolve(...)` — bounded rounds, dependency table with refcount/state/depth, cycle skipping, rebind after each mapping round.
+
+Sequence:
+1. Collect deferred module names from `AMGER_IMPORT_REPORT.DeferredModules` (added for this phase; the client's single `Pending:` name remains for readability).
+2. Open `\SystemRoot\System32\<name>` with `ZwCreateFile` using `FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE`, shared read/write/delete, `FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT` and `OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE`. No write access and no user handle.
+3. Query `FileStandardInformation`, enforce a 256 MiB cap, read the whole file into a transient `PagedPool` buffer with a neutral zero tag, then close the handle.
+4. Validate with `PeParseAndValidate`, reserve `SizeOfImage`, map with `MapSectionsMap`, relocate with `FixupsApply`, then free the raw buffer and register the base through `LookupRegisterPrivate`.
+5. Re-run `ResolveImports` on the primary image and on each mapped dependency; feed any new deferred names into the next round. Maximum 4 rounds, 16 modules, 64 pending names.
+6. Repeated dependency names increment a refcount; a module already in `loading` state is a cycle and is counted, never recursed into.
+7. Loader-list entry counts are measured before and after the phase with `LookupCountLoaderModules`, and the primary import report is captured before/after so `DeferredBefore/After`, `ReboundFunctions` and `DependencyImportsResolved` are real values rather than design claims.
+8. Any hard failure releases every dependency mapping plus the primary reservation. On the current R3 rollback path, the published `Bases` array lets the injector release dependency mappings together with the primary image, so no private dependency VAD survives either.
+
+Detection posture against Eidolon/Warden (`.analysis`):
+- Kernel handles bypass `ObRegisterCallbacks`; no user-mode API, no `LoadLibrary`, no remote handle.
+- No `NtCreateSection`/`NtMapViewOfSection` image section is created, so no `PsSetLoadImageNotifyRoutine` callback fires. Microsoft documents that SEC_IMAGE_NO_EXECUTE sections also suppress these callbacks; this design avoids section objects entirely.
+- PEB/LDR remains read-only; no module is linked into the loader list and no loaded module is patched.
+- No VEH, INT3 trampoline, timing hook or Warden integrity table is touched.
+- Known residual signals: kernel file create/read telemetry, a transient neutral-tagged pool buffer, private executable VADs and PROTECTVM events. These are invisible to the target's user-mode AC but would be visible to a kernel EDR; absolute undetection is not claimed.
+
+Report extension: `AMGER_DEP_REPORT` (Status, FailureStage, ModulesMapped, ModulesLoaded, BytesRead, Rounds, Cycles, Failures, Flags, PrimaryBase, BaseCount, MappedNameCount, Bases, MappedNames, FileOpens, ModulesRegistered, DeferredBefore, DeferredAfter, ReboundFunctions, DependencyImportsResolved, LoaderEntriesBefore, LoaderEntriesAfter) joined the other phase reports; the mapped bases are published so the injector can release every dependency on rollback. The client renders a `Dependencies:` block with measured evidence only — file opens, bytes read, manually mapped and registered counts, rounds/failures/cycles, deferred-before/after, rebound primary functions, dependency imports resolved, loader-entry counts before/after, and a mapped module name/base list. No hardcoded design claims remain in that block; failure stages cover file, parse, allocate, map, relocate, register, import and round limits.
+
+Verification order: test on `notepad` first. Expect `Imports:` to reach `Functions Resolved: 171` with no `Pending:` line, and `Dependencies:` to show the graphics DLLs mapped from System32. INJECT must still return `STATUS_NOT_IMPLEMENTED`. Overwatch is tested only after the entire injector is finished.
 
 # Injection: Manual Mapping
 
@@ -420,7 +449,7 @@ Entry Point: RVA ...
 Sections: ...
 
 Parser Scope: headers, sections, directories, entry point
-Deferred to Phase 5+: export/TLS/load-config table contents
+Deferred to Phase 6+: export/TLS/load-config table contents
 
 Load Configuration: Present/Not Present
 TLS Directory: Present/Not Present

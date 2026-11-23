@@ -53,6 +53,7 @@ static BOOLEAN UserRead(uint64_t address, PVOID destination, SIZE_T length) {
     __try {
         RtlCopyMemory(destination, (const VOID*)(uintptr_t)address, length);
     }
+#pragma warning(suppress : 6320) /* deliberate: user read faults map to FALSE */
     __except (EXCEPTION_EXECUTE_HANDLER) {
         return FALSE;
     }
@@ -511,6 +512,70 @@ NTSTATUS LookupInitialize(AMGER_LOOKUP_CONTEXT* Out) {
     Out->LdrHead = ldr;
     Out->ApiSetMap = apiSet;
     return STATUS_SUCCESS;
+}
+
+NTSTATUS LookupCountLoaderModules(HANDLE ProcessId, uint32_t* OutCount) {
+    PEPROCESS process = NULL;
+    KAPC_STATE apc;
+    BOOLEAN attached = FALSE;
+    AMGER_LOOKUP_CONTEXT context;
+    uint64_t head = 0u;
+    uint64_t entry;
+    uint32_t visited;
+    uint32_t count = 0u;
+    NTSTATUS status;
+
+    if (OutCount == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    *OutCount = 0u;
+
+    status = PsLookupProcessByProcessId(ProcessId, &process);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+    KeStackAttachProcess((PRKPROCESS)process, &apc);
+    attached = TRUE;
+
+    status = LookupInitialize(&context);
+    if (!NT_SUCCESS(status)) {
+        goto done;
+    }
+    if (!UserRead(context.LdrHead + AMGER_PEB_LDR_LOAD_ORDER_OFFSET,
+                  &head, sizeof(head))) {
+        status = STATUS_INVALID_PARAMETER;
+        goto done;
+    }
+
+    entry = head;
+    for (visited = 0u; visited < AMGER_LOOKUP_MAX_LIST; ++visited) {
+        UCHAR raw[0x120];
+        uint64_t next;
+
+        if (entry == 0u) {
+            break;
+        }
+        if (!UserRead(entry, raw, sizeof(raw))) {
+            status = STATUS_INVALID_PARAMETER;
+            break;
+        }
+        ++count;
+        next = Read64(raw);
+        if (next == 0u || next == head) {
+            break;
+        }
+        entry = next;
+    }
+
+done:
+    if (attached) {
+        KeUnstackDetachProcess(&apc);
+    }
+    if (process != NULL) {
+        ObDereferenceObject(process);
+    }
+    *OutCount = count;
+    return status;
 }
 
 NTSTATUS LookupResolveApiSet(

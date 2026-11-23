@@ -10,7 +10,7 @@
  * implementation can assume a well-formed x64 image and a live target PID.
  * Inputs: process id, option bits, kernel image base and image size.
  * Outputs: NTSTATUS and the remote base address in OutRemoteBase.
- * Failure modes: STATUS_NOT_IMPLEMENTED while phases 5-8 are deferred.
+ * Failure modes: STATUS_NOT_IMPLEMENTED while phases 6-8 are deferred.
  */
 
 #include <wdm.h>
@@ -27,6 +27,7 @@ typedef struct _AMGER_INJECT_CONTEXT {
     PAMGER_MAP_REPORT MapReport;
     PAMGER_RELOC_REPORT RelocReport;
     PAMGER_IMPORT_REPORT ImportReport;
+    PAMGER_DEP_REPORT DepReport;
 } AMGER_INJECT_CONTEXT, * PAMGER_INJECT_CONTEXT;
 
 NTSTATUS InjectorExecute(

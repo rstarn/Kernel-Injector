@@ -169,6 +169,10 @@ cl %AMGER_DRIVER_FLAGS% /c /Fo"%AMGER_OBJECTS%\Lookup.obj" "%AMGER_ROOT%\Driver\
 if errorlevel 1 goto :Failed
 cl %AMGER_DRIVER_FLAGS% /c /Fo"%AMGER_OBJECTS%\Resolve.obj" "%AMGER_ROOT%\Driver\Execution\Imports\Binding\Resolve.c"
 if errorlevel 1 goto :Failed
+cl %AMGER_DRIVER_FLAGS% /c /Fo"%AMGER_OBJECTS%\Images.obj" "%AMGER_ROOT%\Driver\Execution\Dependencies\Images.c"
+if errorlevel 1 goto :Failed
+cl %AMGER_DRIVER_FLAGS% /c /Fo"%AMGER_OBJECTS%\Graph.obj" "%AMGER_ROOT%\Driver\Execution\Dependencies\Graph.c"
+if errorlevel 1 goto :Failed
 cl %AMGER_DRIVER_FLAGS% /c /Fo"%AMGER_OBJECTS%\Format.obj" "%AMGER_ROOT%\Driver\Utilities\Parser\Format.c"
 if errorlevel 1 goto :Failed
 cl %AMGER_DRIVER_FLAGS% /c /Fo"%AMGER_OBJECTS%\Guard.obj" "%AMGER_ROOT%\Driver\Utilities\Guard.c"
@@ -189,6 +193,8 @@ link /nologo /driver /subsystem:native /machine:x64 /entry:GsDriverEntry /nodefa
     "%AMGER_OBJECTS%\Fixups.obj" ^
     "%AMGER_OBJECTS%\Lookup.obj" ^
     "%AMGER_OBJECTS%\Resolve.obj" ^
+    "%AMGER_OBJECTS%\Images.obj" ^
+    "%AMGER_OBJECTS%\Graph.obj" ^
     "%AMGER_OBJECTS%\Format.obj" ^
     "%AMGER_OBJECTS%\Guard.obj" ^
     /libpath:"%AMGER_KM_LIB%" ntoskrnl.lib hal.lib BufferOverflowK.lib

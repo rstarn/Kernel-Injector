@@ -63,7 +63,10 @@ void WriteColoredValue(const std::wstring& text, Console::Brush brush) {
         const wchar_t character = text[index];
         const bool separator = character == L':' || character == L',' ||
                                character == L'(' || character == L')' ||
-                               character == L'|' || character == L'/';
+                               character == L'|' || character == L'/' ||
+                               character == L'[' || character == L']' ||
+                               character == L'-' || character == L'>' ||
+                               character == L'@';
         if (!separator) {
             continue;
         }
@@ -190,6 +193,22 @@ const wchar_t* ImportStageName(uint32_t stage) {
     case AMGER_IMPORT_STAGE_IAT: return L"IAT write";
     case AMGER_IMPORT_STAGE_DELAY: return L"delay import";
     case AMGER_IMPORT_STAGE_BOUND: return L"bound import clear";
+    default: return L"unknown";
+    }
+}
+
+const wchar_t* DepStageName(uint32_t stage) {
+    switch (stage) {
+    case AMGER_DEP_STAGE_NONE: return L"none";
+    case AMGER_DEP_STAGE_PARAMETERS: return L"parameters";
+    case AMGER_DEP_STAGE_FILE: return L"kernel file read";
+    case AMGER_DEP_STAGE_PARSE: return L"dependency PE parse";
+    case AMGER_DEP_STAGE_ALLOCATE: return L"dependency reserve";
+    case AMGER_DEP_STAGE_MAP: return L"dependency map";
+    case AMGER_DEP_STAGE_RELOCATE: return L"dependency relocations";
+    case AMGER_DEP_STAGE_REGISTER: return L"dependency register";
+    case AMGER_DEP_STAGE_IMPORT: return L"dependency imports";
+    case AMGER_DEP_STAGE_ROUND: return L"round limit";
     default: return L"unknown";
     }
 }
@@ -344,6 +363,8 @@ void InjectScreen(Session& session) {
         wchar_t reportLine[640] = {};
         const Console::Brush good = Console::Brush::LightGreen;
         const Console::Brush bad = Console::Brush::LightRed;
+        const wchar_t* executionText =
+            status == 0xC0000002u ? L"not performed" : L"not reached";
 
         const auto emit = [](const wchar_t* label, const wchar_t* value,
                              Console::Brush brush) {
@@ -456,7 +477,9 @@ void InjectScreen(Session& session) {
         swprintf_s(reportLine, L"%u", parser.OrdinalImportCount);
         emit(L"  Imports By Ordinal: ", reportLine, good);
         Console::WriteRaw(L"\n");
-        emit(L"  Manual-Map Modules: ", L"deferred to Phase 5", bad);
+        swprintf_s(reportLine, L"%u",
+                   static_cast<unsigned>(parser.Dependencies.ModulesMapped));
+        emit(L"  Manual-Map Modules: ", reportLine, good);
         swprintf_s(reportLine, L"%u", parser.ApiSetCount);
         emit(L"  API-set References: ", reportLine, good);
         Console::WriteRaw(L"\n");
@@ -478,33 +501,30 @@ void InjectScreen(Session& session) {
             swprintf_s(reportLine, L"%u", alloc.TargetProcessId);
             emit(L"  Target PID: ", reportLine, good);
             Console::WriteRaw(L"\n");
-            emit(L"  Base Source: ", L"memory manager", good);
-            emit(L"  Alignment: ", L"64 KiB (manager-chosen)", good);
-            Console::WriteRaw(L"\n");
-
-            emit(L"  Protection: ", L"READWRITE (reserve only)", good);
+            const bool aligned = alloc.RemoteBase != 0u &&
+                                 (alloc.RemoteBase & 0xFFFFu) == 0u;
+            swprintf_s(reportLine, aligned ? L"64 KiB" : L"unaligned");
+            emit(L"  Alignment: ", reportLine, aligned ? good : bad);
             swprintf_s(reportLine, L"0x%016llX",
                        static_cast<unsigned long long>(alloc.RemoteBase));
             emit(L"  Remote Base: ", reportLine, alloc.RemoteBase != 0u ? good : bad);
-            emit(L"  Allocation Type: ", L"MEM_RESERVE", good);
             Console::WriteRaw(L"\n");
 
             const bool reserved = (alloc.Flags & AMGER_ALLOC_FLAG_RESERVED) != 0u;
             const bool released = (alloc.Flags & AMGER_ALLOC_FLAG_RELEASED) != 0u;
+            const bool committed =
+                (parser.Mapping.Flags & AMGER_MAP_FLAG_COMMITTED) != 0u;
             emit(L"  Reservation: ",
                  released ? L"released" : reserved ? L"active" : L"none",
                  reserved ? good : bad);
-            emit(L"  Commit: ", L"performed in Mapping", good);
-            Console::WriteRaw(L"\n");
-            emit(L"  VAD State: ", L"private, non-executable", good);
-            emit(L"  Handle: ", L"none (PsLookup only)", good);
-            emit(L"  Caller: ", L"kernel-origin Zw", good);
+            emit(L"  Commit: ", committed ? L"read/write" : L"not committed",
+                 committed ? good : bad);
             Console::WriteRaw(L"\n");
 
             emit(L"  Rollback: ",
                  released ? L"reserved region released" : L"reservation retained",
                  released ? good : bad);
-            emit(L"  Execution: ", L"deferred (phases 5-8)", bad);
+            emit(L"  Execution: ", executionText, bad);
             Console::WriteRaw(L"\n");
         }
 
@@ -556,7 +576,7 @@ void InjectScreen(Session& session) {
             emit(L"  Rollback: ",
                  reverted ? L"mapping reverted" : L"mapping retained",
                  reverted ? good : bad);
-            emit(L"  Execution: ", L"deferred to Phase 5", bad);
+            emit(L"  Execution: ", executionText, bad);
             Console::WriteRaw(L"\n");
         }
 
@@ -599,8 +619,9 @@ void InjectScreen(Session& session) {
             emit(L"  Skipped (ABSOLUTE): ", reportLine, good);
             Console::WriteRaw(L"\n");
 
-            emit(L"  Write Window: ", L"read/write (pre-seal)", good);
-            emit(L"  MDL: ", L"locked system mapping", good);
+            const bool sealed = (parser.Mapping.Flags & AMGER_MAP_FLAG_PROTECTED) != 0u;
+            emit(L"  Seal State: ", sealed ? L"applied" : L"pending",
+                 sealed ? good : bad);
             Console::WriteRaw(L"\n");
 
             const bool reverted =
@@ -608,7 +629,7 @@ void InjectScreen(Session& session) {
             emit(L"  Rollback: ",
                  reverted ? L"mapping reverted" : L"mapping retained",
                  reverted ? good : bad);
-            emit(L"  Execution: ", L"deferred to Phase 5", bad);
+            emit(L"  Execution: ", executionText, bad);
             Console::WriteRaw(L"\n");
         }
 
@@ -659,9 +680,13 @@ void InjectScreen(Session& session) {
             }
             Console::WriteRaw(L"\n");
 
-            emit(L"  Loader List: ", L"unmodified", good);
-            emit(L"  Bound Imports: ", L"invalidated", good);
-            emit(L"  Source: ", L"PEB / LDR (read-only)", good);
+            const bool boundCleared =
+                (imports.Flags & AMGER_IMPORT_FLAG_BOUND_CLEARED) != 0u;
+            swprintf_s(reportLine, L"%u", static_cast<unsigned>(imports.DeferredModuleCount));
+            emit(L"  Pending Modules: ", reportLine,
+                 imports.DeferredModuleCount == 0u ? good : bad);
+            emit(L"  Bound Imports: ", boundCleared ? L"cleared" : L"not cleared",
+                 boundCleared ? good : bad);
             Console::WriteRaw(L"\n");
 
             const bool reverted =
@@ -669,7 +694,93 @@ void InjectScreen(Session& session) {
             emit(L"  Rollback: ",
                  reverted ? L"mapping reverted" : L"mapping retained",
                  reverted ? good : bad);
-            emit(L"  Execution: ", L"deferred to Phase 5", bad);
+            emit(L"  Execution: ", executionText, bad);
+            Console::WriteRaw(L"\n");
+        }
+
+        if (parser.Dependencies.Flags != 0u || parser.Dependencies.Status != 0u) {
+            const AMGER_DEP_REPORT& dep = parser.Dependencies;
+
+            Console::WriteRaw(L"\n");
+            Console::WriteLine(L"Dependencies:", Console::Brush::White);
+            Console::WriteRaw(L"\n");
+
+            swprintf_s(reportLine, L"0x%08X (%s)", dep.Status,
+                       StatusName(dep.Status));
+            emit(L"  Status: ", reportLine, dep.Status == 0u ? good : bad);
+            if (dep.Status != 0u) {
+                swprintf_s(reportLine, L"0x%08X (%s)", dep.FailureStage,
+                           DepStageName(dep.FailureStage));
+                emit(L"  Failure Stage: ", reportLine, bad);
+            }
+            Console::WriteRaw(L"\n");
+
+            swprintf_s(reportLine, L"%u", static_cast<unsigned>(dep.DeferredBefore));
+            emit(L"  Deferred Before: ", reportLine, good);
+            swprintf_s(reportLine, L"%u", static_cast<unsigned>(dep.DeferredAfter));
+            emit(L"  Deferred After: ", reportLine,
+                 dep.DeferredAfter == 0u ? good : bad);
+            Console::WriteRaw(L"\n");
+
+            swprintf_s(reportLine, L"%u", static_cast<unsigned>(dep.ReboundFunctions));
+            emit(L"  Rebound Functions: ", reportLine, good);
+            swprintf_s(reportLine, L"%u",
+                       static_cast<unsigned>(dep.DependencyImportsResolved));
+            emit(L"  Dependency Imports: ", reportLine, good);
+            Console::WriteRaw(L"\n");
+
+            swprintf_s(reportLine, L"0x%08X", dep.BytesRead);
+            emit(L"  Bytes Read: ", reportLine, good);
+            swprintf_s(reportLine, L"%u", static_cast<unsigned>(dep.FileOpens));
+            emit(L"  File Opens: ", reportLine, good);
+            Console::WriteRaw(L"\n");
+
+            swprintf_s(reportLine, L"%u", static_cast<unsigned>(dep.ModulesMapped));
+            emit(L"  Manually Mapped: ", reportLine, good);
+            swprintf_s(reportLine, L"%u", static_cast<unsigned>(dep.ModulesRegistered));
+            emit(L"  Modules Registered: ", reportLine, good);
+            Console::WriteRaw(L"\n");
+
+            swprintf_s(reportLine, L"%u", static_cast<unsigned>(dep.Rounds));
+            emit(L"  Rounds: ", reportLine, good);
+            swprintf_s(reportLine, L"%u", static_cast<unsigned>(dep.Failures));
+            emit(L"  Failures: ", reportLine,
+                 dep.Failures == 0u ? good : bad);
+            swprintf_s(reportLine, L"%u", static_cast<unsigned>(dep.Cycles));
+            emit(L"  Cycles Skipped: ", reportLine,
+                 dep.Cycles == 0u ? good : bad);
+            Console::WriteRaw(L"\n");
+
+            swprintf_s(reportLine, L"%u -> %u",
+                       static_cast<unsigned>(dep.LoaderEntriesBefore),
+                       static_cast<unsigned>(dep.LoaderEntriesAfter));
+            emit(L"  Loader Entries: ", reportLine,
+                 dep.LoaderEntriesBefore == dep.LoaderEntriesAfter ? good : bad);
+            Console::WriteRaw(L"\n");
+
+            if (dep.MappedNameCount != 0u) {
+                Console::WriteText(L"  Mapped Modules:", Console::Brush::White);
+                Console::WriteRaw(L"\n");
+                Console::WriteRaw(L"\n");
+                for (unsigned index = 0u;
+                     index < dep.MappedNameCount &&
+                     index < AMGER_DEP_REPORT_MAX_NAMES;
+                     ++index) {
+                    swprintf_s(reportLine, L"[%u] %hs @ 0x%016llX", index,
+                               dep.MappedNames[index],
+                               static_cast<unsigned long long>(
+                                   dep.Bases[index]));
+                    emit(L"    ", reportLine, good);
+                }
+                Console::WriteRaw(L"\n");
+            }
+
+            const bool reverted =
+                (dep.Flags & AMGER_DEP_FLAG_REVERTED) != 0u;
+            emit(L"  Rollback: ",
+                 reverted ? L"dependencies released" : L"dependencies retained",
+                 reverted ? good : bad);
+            emit(L"  Execution: ", executionText, bad);
             Console::WriteRaw(L"\n");
         }
     }

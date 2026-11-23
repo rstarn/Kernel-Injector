@@ -53,6 +53,9 @@ NTKERNELAPI NTSTATUS ZwQueryInformationProcess(
 /* Called once while attached to the target process. */
 NTSTATUS LookupInitialize(AMGER_LOOKUP_CONTEXT* Out);
 
+/* Counts InLoadOrderModuleList entries in the target for before/after evidence. */
+NTSTATUS LookupCountLoaderModules(HANDLE ProcessId, uint32_t* OutCount);
+
 /* Resolves api-ms-win/ext-ms-win names through PEB->ApiSetMap v6/v4/v2.
  * Sets Redirected when the name was actually rewritten. */
 NTSTATUS LookupResolveApiSet(
