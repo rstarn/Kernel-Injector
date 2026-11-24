@@ -174,10 +174,15 @@ static NTSTATUS ResolveSymbol(
                     break;
                 }
             }
-            if (!present && state->Report->DeferredModuleCount < 8u) {
-                CopyAscii(state->Report->DeferredModules[state->Report->DeferredModuleCount],
-                          AMGER_REPORT_NAME_LENGTH, dllName);
-                ++state->Report->DeferredModuleCount;
+            if (!present) {
+                if (state->Report->DeferredModuleCount < 8u) {
+                    CopyAscii(state->Report->DeferredModules[state->Report->DeferredModuleCount],
+                              AMGER_REPORT_NAME_LENGTH, dllName);
+                    ++state->Report->DeferredModuleCount;
+                } else {
+                    state->Report->Flags |=
+                        AMGER_IMPORT_FLAG_DEFERRED_TRUNCATED;
+                }
             }
         }
         /* A missing module is deferred only; a missing export on a present
@@ -360,6 +365,16 @@ static NTSTATUS ResolveDescriptorTable(
                 previousStage = SetFailureStage(state, AMGER_IMPORT_STAGE_IAT);
                 Write64(state->System + handleRva, moduleBase);
                 state->Report->FailureStage = previousStage;
+            }
+        }
+        /* The thunk loop is bounded. If the very next slot is still non-null,
+         * this descriptor had more imports than we resolved — say so instead
+         * of leaving silently-unresolved IAT entries behind. */
+        if (thunkIndex == AMGER_MAX_THUNKS) {
+            uint32_t nextOffset = lookupRva + AMGER_MAX_THUNKS * 8u;
+            if (InImage(image, nextOffset, 8u) &&
+                Read64(state->System + nextOffset) != 0u) {
+                state->Report->Flags |= AMGER_IMPORT_FLAG_THUNK_TRUNCATED;
             }
         }
     }

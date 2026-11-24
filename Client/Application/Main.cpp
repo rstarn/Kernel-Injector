@@ -748,6 +748,14 @@ void InjectScreen(Session& session) {
                  imports.DeferredModuleCount == 0u ? good : bad);
             emit(L"  Bound Imports: ", boundCleared ? L"cleared" : L"not cleared",
                  boundCleared ? good : bad);
+            emit(L"  Pending List Truncated: ",
+                 FlagText(imports.Flags, AMGER_IMPORT_FLAG_DEFERRED_TRUNCATED),
+                 (imports.Flags & AMGER_IMPORT_FLAG_DEFERRED_TRUNCATED) != 0u
+                     ? bad : good);
+            emit(L"  Thunk List Truncated: ",
+                 FlagText(imports.Flags, AMGER_IMPORT_FLAG_THUNK_TRUNCATED),
+                 (imports.Flags & AMGER_IMPORT_FLAG_THUNK_TRUNCATED) != 0u
+                     ? bad : good);
             Console::WriteRaw(L"\n");
 
             const bool reverted =

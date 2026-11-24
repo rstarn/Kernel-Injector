@@ -15,7 +15,10 @@
 
 #define AMGER_PAGE_SIZE_4K        0x1000u
 #define AMGER_MAX_TLS_CALLBACKS   16u
-#define AMGER_MAX_JOBS            8u
+/* One job per TLS callback plus the .pdata registration job, so a DLL with
+ * the maximum callback count never silently loses either. */
+
+#define AMGER_MAX_JOBS            (AMGER_MAX_TLS_CALLBACKS + 1u)
 
 /* EmitStub emits 21 bytes of prologue + 65 per job + 22 bytes of epilogue.
  * Size the emitter buffer from the same constants instead of a guessed 512. */
@@ -2239,7 +2242,11 @@ NTSTATUS InitializePhase(const AMGER_INIT_CONTEXT* context) {
      * exception table before the entry point is ever called. */
 
     RtlZeroMemory(jobs, sizeof(jobs));
-    for (i = 0u; i < state->TlsCallbackCount && jobCount < AMGER_MAX_JOBS; ++i) {
+    /* Reserve the last job slot for .pdata so a DLL with many TLS callbacks
+     * cannot silently lose its RtlAddFunctionTable registration and with it
+     * exception unwind for the whole mapped image. */
+    for (i = 0u; i < state->TlsCallbackCount &&
+                  jobCount < (AMGER_MAX_JOBS - 1u); ++i) {
         jobs[jobCount].Function = state->TlsCallbacks[i];
         jobs[jobCount].Arg1 = context->RemoteBase;
         jobs[jobCount].Arg2 = 1u; /* DLL_PROCESS_ATTACH */

@@ -347,6 +347,16 @@ static NTSTATUS ResolveApiSetV4V2(uint64_t ns, uint32_t nsSize,
                  version == 4u ? 8u : 4u, nsSize)) {
         return STATUS_INVALID_PARAMETER;
     }
+    {
+        /* Both v4 API_SET_VALUE_ARRAY and v2 API_SET_VALUE_ARRAY_V2 lead with
+         * a Count field. Reject an empty array before reading its first value;
+         * otherwise a count of zero silently yields a bogus host. */
+        uint32_t valueArrayCount = version == 4u ? Read32(arrayBytes + 4u)
+                                                 : Read32(arrayBytes);
+        if (valueArrayCount == 0u || valueArrayCount > 0x1000u) {
+            return STATUS_INVALID_PARAMETER;
+        }
+    }
     if (!ApiRead(ns, dataOffset + (version == 4u ? 8u : 4u), valueBytes,
                  valueStride, nsSize)) {
         return STATUS_INVALID_PARAMETER;
@@ -740,6 +750,16 @@ NTSTATUS LookupGetExport(
         (uint64_t)functionsRva + (uint64_t)functionCount * 4u > moduleSize) {
         return STATUS_INVALID_PARAMETER;
     }
+    /* Validate the name and ordinal arrays up front. The PE export directory
+     * has no explicit array sizes; a malformed or repacked image must not make
+     * a lookup walk outside the mapped module. */
+    if (nameCount != 0u) {
+        if (namesRva == 0u || ordinalsRva == 0u ||
+            (uint64_t)namesRva + (uint64_t)nameCount * 4u > moduleSize ||
+            (uint64_t)ordinalsRva + (uint64_t)nameCount * 2u > moduleSize) {
+            return STATUS_INVALID_PARAMETER;
+        }
+    }
 
     if (byOrdinal) {
         if (ordinal < functionBase) {
@@ -816,6 +836,11 @@ NTSTATUS LookupGetExport(
                     return STATUS_INVALID_PARAMETER;
                 }
                 value = value * 10u + (uint32_t)(out->Symbol[index] - '0');
+                /* An ordinal is 16-bit. Reject overflow instead of truncating
+                 * into an unrelated export of the target module. */
+                if (value > 0xFFFFu) {
+                    return STATUS_INVALID_PARAMETER;
+                }
             }
             out->ByOrdinal = TRUE;
             out->Ordinal = (uint16_t)value;

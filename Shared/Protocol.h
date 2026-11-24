@@ -204,6 +204,11 @@ typedef struct _AMGER_RELOC_REPORT {
 #define AMGER_IMPORT_FLAG_DEFERRED      0x00000002u
 #define AMGER_IMPORT_FLAG_REVERTED      0x00000004u
 #define AMGER_IMPORT_FLAG_BOUND_CLEARED 0x00000008u
+/* Set when a bounded report/parse array was exhausted and further distinct
+ * entries existed. The count fields stay truthful: they report what fit, and
+ * this flag says the source had more than the wire/parse arrays could hold. */
+#define AMGER_IMPORT_FLAG_DEFERRED_TRUNCATED 0x00000010u
+#define AMGER_IMPORT_FLAG_THUNK_TRUNCATED    0x00000020u
 
 #define AMGER_IMPORT_STAGE_NONE       0u
 #define AMGER_IMPORT_STAGE_PARAMETERS 1u
