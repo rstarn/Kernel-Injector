@@ -113,7 +113,7 @@ static VOID CollectDeferred(AMGER_DEP_GRAPH* graph, AMGER_PENDING* pending,
         PendingAdd(graph, pending, report->DeferredModule);
     }
     for (index = 0u; index < report->DeferredModuleCount &&
-                      index < 8u; ++index) {
+                      index < AMGER_REPORT_MAX_DEFERRED; ++index) {
         PendingAdd(graph, pending, report->DeferredModules[index]);
     }
 }

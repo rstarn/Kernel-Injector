@@ -118,6 +118,7 @@ typedef struct _AMGER_RESULT_CONTROL {
 #define AMGER_REPORT_AREA_SIZE        4096u
 #define AMGER_REPORT_MAX_MODULES      16u
 #define AMGER_REPORT_NAME_LENGTH      32u
+#define AMGER_REPORT_MAX_DEFERRED     16u
 
 #define AMGER_REPORT_FLAG_LOAD_CONFIG   0x00000001u
 #define AMGER_REPORT_FLAG_TLS           0x00000002u
@@ -240,7 +241,7 @@ typedef struct _AMGER_IMPORT_REPORT {
     char DeferredModule[AMGER_REPORT_NAME_LENGTH];
     char DeferredSymbol[AMGER_REPORT_NAME_LENGTH];
     uint32_t DeferredModuleCount;
-    char DeferredModules[8u][AMGER_REPORT_NAME_LENGTH];
+    char DeferredModules[AMGER_REPORT_MAX_DEFERRED][AMGER_REPORT_NAME_LENGTH];
     uint32_t Flags;
     uint64_t RemoteBase;
 } AMGER_IMPORT_REPORT, * PAMGER_IMPORT_REPORT;
@@ -302,6 +303,35 @@ typedef struct _AMGER_DEP_REPORT {
 #define AMGER_INIT_FLAG_CFG          0x00000100u
 #define AMGER_INIT_FLAG_REVERTED     0x00000200u
 #define AMGER_INIT_FLAG_THREAD_NOTIFY 0x00000400u
+/* The CFG check pointer was read back after the retarget write. Without this
+ * bit CfgCheckAfter is the value we intended to write, not a measured value. */
+#define AMGER_INIT_FLAG_CFG_READBACK  0x00000800u
+/* The image's GuardCFCheckFunctionPointer was zero: no check pointer exists.
+ * This is distinct from a native/external dispatch pointer. */
+#define AMGER_INIT_FLAG_CFG_ABSENT    0x00001000u
+
+/* Process mitigation policy classes (PROCESS_MITIGATION_POLICY, winnt.h) queried
+ * through the native ProcessMitigationPolicy information class. The native
+ * information class is declared in the KM WDK headers but Microsoft does not
+ * document it as a supported driver API; the query status is published so the
+ * client can see whether the measurement succeeded. */
+#define AMGER_PROCESS_MITIGATION_CLASS            52u
+#define AMGER_PROCESS_MITIGATION_DYNAMIC_CODE     2u
+#define AMGER_PROCESS_MITIGATION_CFG              7u
+#define AMGER_PROCESS_MITIGATION_USER_SHADOW_STACK 15u
+
+#define AMGER_DYNAMIC_CODE_PROHIBIT         0x00000001u
+#define AMGER_CFG_ENABLE_CONTROL_FLOW_GUARD 0x00000001u
+#define AMGER_CFG_STRICT_MODE               0x00000004u
+#define AMGER_CFG_ENABLE_XFG                0x00000008u
+#define AMGER_SHADOW_STACK_ENABLE           0x00000001u
+#define AMGER_SHADOW_STACK_STRICT           0x00000010u
+
+#define AMGER_CET_CLASS_UNKNOWN             0u
+#define AMGER_CET_CLASS_NOT_ENFORCED        1u
+#define AMGER_CET_CLASS_SHADOW_STACK_COMPAT 2u
+#define AMGER_CET_CLASS_SHADOW_STACK_STRICT 3u
+#define AMGER_CET_CLASS_XFG                 4u
 
 #define AMGER_INIT_STAGE_NONE        0u
 #define AMGER_INIT_STAGE_PARAMETERS  1u
@@ -329,7 +359,7 @@ typedef struct _AMGER_DEP_REPORT {
 #define AMGER_MANIFEST_OTHER          4u
 #define AMGER_MANIFEST_MALFORMED      5u
 
-#define AMGER_INIT_BUILD_ID           9u
+#define AMGER_INIT_BUILD_ID           10u
 
 /* Phase 7 publishes only measured outcomes from entry resolution, the CRT
  * call and the header erase. No stealth or loader-lock claim is a field. */
@@ -425,6 +455,13 @@ typedef struct _AMGER_INIT_REPORT {
     uint64_t DetourAddress;
     uint64_t CfgCheckBefore;
     uint64_t CfgCheckAfter;
+    uint64_t RetGadget;
+    uint32_t MitigationQueryStatus;
+    uint32_t CfgPolicyFlags;
+    uint32_t ShadowStackPolicyFlags;
+    uint32_t DynamicCodePolicyFlags;
+    uint32_t CetRiskClass;
+    uint32_t ExecutionAllowed;
     uint64_t RemoteBase;
 } AMGER_INIT_REPORT, * PAMGER_INIT_REPORT;
 

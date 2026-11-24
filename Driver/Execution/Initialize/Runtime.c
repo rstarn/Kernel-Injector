@@ -14,7 +14,7 @@
  */
 
 #define AMGER_PAGE_SIZE_4K        0x1000u
-#define AMGER_MAX_TLS_CALLBACKS   16u
+#define AMGER_MAX_TLS_CALLBACKS   32u
 /* One job per TLS callback plus the .pdata registration job, so a DLL with
  * the maximum callback count never silently loses either. */
 
@@ -75,6 +75,33 @@ NTKERNELAPI NTSTATUS ZwProtectVirtualMemory(
     ULONG NewProtect, PULONG OldProtect);
 NTKERNELAPI BOOLEAN KeTestAlertThread(KPROCESSOR_MODE AlertMode);
 NTKERNELAPI HANDLE PsGetThreadProcessId(PETHREAD Thread);
+/* Declared in the KM headers as an information class but not documented as a
+ * supported driver API. The query status is published, never assumed. */
+NTKERNELAPI NTSTATUS ZwQueryInformationProcess(
+    HANDLE ProcessHandle, ULONG ProcessInformationClass,
+    PVOID ProcessInformation, ULONG ProcessInformationLength,
+    PULONG ReturnLength);
+NTKERNELAPI NTSTATUS ZwOpenProcess(
+    PHANDLE ProcessHandle, ACCESS_MASK DesiredAccess,
+    POBJECT_ATTRIBUTES ObjectAttributes, PCLIENT_ID ClientId);
+
+#ifndef PROCESS_QUERY_INFORMATION
+#define PROCESS_QUERY_INFORMATION 0x0400u
+#endif
+#ifndef PROCESS_QUERY_LIMITED_INFORMATION
+#define PROCESS_QUERY_LIMITED_INFORMATION 0x1000u
+#endif
+/* Win32 documents PROCESS_QUERY_INFORMATION for GetProcessMitigationPolicy;
+ * request both rights so the native query is not rejected on either check. */
+#define AMGER_MITIGATION_ACCESS \
+    (PROCESS_QUERY_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION)
+
+/* PROCESS_MITIGATION_POLICY_INFORMATION: POLICY selector followed by the
+ * policy-type Flags word. Both fields are 32-bit. */
+typedef struct _AMGER_MITIGATION_QUERY {
+    uint32_t Policy;
+    uint32_t Flags;
+} AMGER_MITIGATION_QUERY, * PAMGER_MITIGATION_QUERY;
 
 /* R25: a system-wide thread-notify callback. Its only safe job is enqueueing
  * an event and arming a passive-level work item; every user-memory access,
@@ -168,6 +195,10 @@ typedef struct _AMGER_RUNTIME_STATE {
     uint64_t CfgCheckPointerAddress;
     uint64_t CfgCheckBefore;
     BOOLEAN CfgCheckExternal;
+    /* Zero is a documented "no check pointer" value. It must never be treated
+     * as an image-relative address: value - ImageBase underflows and the
+     * retarget pass would write through a bogus pointer. */
+    BOOLEAN CfgCheckAbsent;
     uint64_t CfgCheckAfter;
     uint64_t RetGadget;
 
@@ -338,6 +369,87 @@ done:
 }
 
 /* ------------------------------------------------------------------ */
+/* R24 / R27 / R29 - process mitigation measurement                    */
+/* ------------------------------------------------------------------ */
+
+static NTSTATUS QueryMitigation(HANDLE handle, uint32_t policy,
+                                uint32_t* outFlags) {
+    AMGER_MITIGATION_QUERY query;
+    ULONG returned = 0u;
+    NTSTATUS status;
+
+    query.Policy = policy;
+    query.Flags = 0u;
+    status = ZwQueryInformationProcess(handle, AMGER_PROCESS_MITIGATION_CLASS,
+                                       &query, sizeof(query), &returned);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+    if (returned < sizeof(query)) {
+        return STATUS_INFO_LENGTH_MISMATCH;
+    }
+    *outFlags = query.Flags;
+    return STATUS_SUCCESS;
+}
+
+/* Measurement only: no donor write, no thread change. The risk class and the
+ * gate are published so a future execution phase cannot ignore them. */
+static VOID ProbeMitigations(PAMGER_RUNTIME_STATE state) {
+    OBJECT_ATTRIBUTES attributes;
+    CLIENT_ID clientId;
+    HANDLE handle = NULL;
+    uint32_t cfg = 0u;
+    uint32_t shadow = 0u;
+    uint32_t dynamicCode = 0u;
+    NTSTATUS status;
+
+    InitializeObjectAttributes(&attributes, NULL, OBJ_KERNEL_HANDLE,
+                               NULL, NULL);
+    clientId.UniqueProcess = state->ProcessId;
+    clientId.UniqueThread = NULL;
+    status = ZwOpenProcess(&handle, AMGER_MITIGATION_ACCESS,
+                           &attributes, &clientId);
+    if (NT_SUCCESS(status)) {
+        status = QueryMitigation(handle, AMGER_PROCESS_MITIGATION_CFG, &cfg);
+        if (NT_SUCCESS(status)) {
+            status = QueryMitigation(handle,
+                                     AMGER_PROCESS_MITIGATION_USER_SHADOW_STACK,
+                                     &shadow);
+        }
+        if (NT_SUCCESS(status)) {
+            status = QueryMitigation(handle,
+                                     AMGER_PROCESS_MITIGATION_DYNAMIC_CODE,
+                                     &dynamicCode);
+        }
+        ZwClose(handle);
+    }
+    state->Report->MitigationQueryStatus = (uint32_t)status;
+    state->Report->CfgPolicyFlags = cfg;
+    state->Report->ShadowStackPolicyFlags = shadow;
+    state->Report->DynamicCodePolicyFlags = dynamicCode;
+
+    if (!NT_SUCCESS(status)) {
+        state->Report->CetRiskClass = AMGER_CET_CLASS_UNKNOWN;
+        state->Report->ExecutionAllowed = 0u;
+        return;
+    }
+    if ((cfg & AMGER_CFG_ENABLE_XFG) != 0u) {
+        state->Report->CetRiskClass = AMGER_CET_CLASS_XFG;
+    } else if ((shadow & AMGER_SHADOW_STACK_STRICT) != 0u) {
+        state->Report->CetRiskClass = AMGER_CET_CLASS_SHADOW_STACK_STRICT;
+    } else if ((shadow & AMGER_SHADOW_STACK_ENABLE) != 0u) {
+        state->Report->CetRiskClass = AMGER_CET_CLASS_SHADOW_STACK_COMPAT;
+    } else {
+        state->Report->CetRiskClass = AMGER_CET_CLASS_NOT_ENFORCED;
+    }
+    /* Phase 8 (thread hijack) is deferred. The gate is deliberately
+     * conservative: only a target with no shadow stack and no XFG is marked
+     * eligible. A CETCOMPAT image is measured by the parser report. */
+    state->Report->ExecutionAllowed =
+        state->Report->CetRiskClass == AMGER_CET_CLASS_NOT_ENFORCED ? 1u : 0u;
+}
+
+/* ------------------------------------------------------------------ */
 /* R12 / R26 / R19 - load config, cookie, CFG                          */
 /* ------------------------------------------------------------------ */
 
@@ -416,15 +528,27 @@ static NTSTATUS ValidateLoadConfig(PAMGER_RUNTIME_STATE state) {
      * skips non-instrumented images and records the zero as CfgCheckBefore. */
 
     rva = value - state->Image->ImageBase;
-    if (value < state->Image->ImageBase || rva >= state->Image->SizeOfImage) {
+    if (value == 0u) {
+        /* "No check pointer in this image" is a documented zero value. Mark it
+         * absent so no image-relative pointer is derived from the underflowed
+         * rva below; the retarget pass must not write through it. */
+        state->CfgCheckExternal = TRUE;
+        state->CfgCheckAbsent = TRUE;
+    } else if (value < state->Image->ImageBase ||
+               rva >= state->Image->SizeOfImage) {
         /* On a CFG-instrumented image this field can hold the native address
          * of ntdll's guard dispatch routine rather than an image VA. Record
          * it as an external pointer; the relocation patch pass rewrites the
          * image copies of the old value. */
 
         state->CfgCheckExternal = TRUE;
+        state->CfgCheckAbsent = FALSE;
     } else {
         state->CfgCheckExternal = FALSE;
+        state->CfgCheckAbsent = FALSE;
+    }
+    if (state->CfgCheckAbsent) {
+        state->Report->Flags |= AMGER_INIT_FLAG_CFG_ABSENT;
     }
     state->CfgCheckAddress = Remote(state,
                                     directory.Rva + AMGER_LC_GUARD_CHECK);
@@ -742,6 +866,20 @@ static NTSTATUS InitTls(PAMGER_RUNTIME_STATE state) {
                     return Fail(state, AMGER_INIT_STAGE_TLS_CALLBACK,
                                 STATUS_INVALID_PARAMETER);
                 }
+            }
+        }
+        /* The TLS callback array is NULL-terminated with no count field. If a
+         * 33rd entry is still non-NULL, more callbacks exist than we can run;
+         * failing here is honest, unlike silently skipping initializers. */
+        if (i == AMGER_MAX_TLS_CALLBACKS) {
+            uint64_t overflow = 0u;
+            if (UserRead(state->Process,
+                         callbacksRemote +
+                             ((uint64_t)AMGER_MAX_TLS_CALLBACKS * 8u),
+                         &overflow, 8u) &&
+                overflow != 0u) {
+                return Fail(state, AMGER_INIT_STAGE_TLS_CALLBACK,
+                            STATUS_INVALID_PARAMETER);
             }
         }
         state->TlsCallbackCount = i;
@@ -1759,6 +1897,7 @@ static NTSTATUS RetargetCfg(PAMGER_RUNTIME_STATE state) {
 
         state->CfgCheckAfter = state->CfgCheckBefore;
         state->Report->CfgCheckAfter = state->CfgCheckAfter;
+        state->Report->RetGadget = 0u;
         state->Report->Flags |= AMGER_INIT_FLAG_CFG;
         return STATUS_SUCCESS;
     }
@@ -1801,6 +1940,7 @@ static NTSTATUS RetargetCfg(PAMGER_RUNTIME_STATE state) {
         return Fail(state, AMGER_INIT_STAGE_CFG, STATUS_NOT_FOUND);
     }
     state->RetGadget = gadget;
+    state->Report->RetGadget = gadget;
 
     if (!UserWrite(state->Process, state->CfgCheckAddress,
                    &gadget, sizeof(gadget))) {
@@ -1816,6 +1956,7 @@ static NTSTATUS RetargetCfg(PAMGER_RUNTIME_STATE state) {
             state->CfgCheckAfter != gadget) {
             return Fail(state, AMGER_INIT_STAGE_CFG, STATUS_UNSUCCESSFUL);
         }
+        state->Report->Flags |= AMGER_INIT_FLAG_CFG_READBACK;
     } else {
         state->CfgCheckAfter = gadget;
     }
@@ -2220,6 +2361,10 @@ NTSTATUS InitializePhase(const AMGER_INIT_CONTEXT* context) {
         state->Lookup.LdrHead = ldr;
         state->Lookup.ApiSetMap = apiSet;
     }
+
+    /* Read-only process policy measurement. A failed query is published as a
+     * status and leaves the execution gate closed; it never fails this phase. */
+    ProbeMitigations(state);
 
     status = ValidateLoadConfig(state);
     if (!NT_SUCCESS(status)) goto failure;

@@ -57,6 +57,16 @@ const wchar_t* StateText(uint32_t flags, uint32_t bit) {
     return (flags & bit) != 0u ? L"Enabled" : L"Disabled";
 }
 
+const wchar_t* CetRiskClassName(uint32_t riskClass) {
+    switch (riskClass) {
+    case AMGER_CET_CLASS_NOT_ENFORCED:        return L"Not Enforced";
+    case AMGER_CET_CLASS_SHADOW_STACK_COMPAT: return L"Shadow Stack Compat";
+    case AMGER_CET_CLASS_SHADOW_STACK_STRICT: return L"Shadow Stack Strict";
+    case AMGER_CET_CLASS_XFG:                 return L"XFG";
+    default:                                  return L"Unknown";
+    }
+}
+
 void WriteColoredValue(const std::wstring& text, Console::Brush brush) {
     size_t start = 0u;
     for (size_t index = 0u; index < text.size(); ++index) {
@@ -971,6 +981,29 @@ void InjectScreen(Session& session) {
                        static_cast<unsigned long long>(init.CfgCheckAfter));
             emit(L"  CFG Check Pointer: ", reportLine,
                  (init.Flags & AMGER_INIT_FLAG_CFG) != 0u ? good : bad);
+
+            swprintf_s(reportLine,
+                       L"0x%08X | CFG = 0x%08X / Shadow Stack = 0x%08X / Dynamic Code = 0x%08X",
+                       init.MitigationQueryStatus, init.CfgPolicyFlags,
+                       init.ShadowStackPolicyFlags, init.DynamicCodePolicyFlags);
+            emit(L"  Mitigation Probe: ", reportLine,
+                 init.MitigationQueryStatus == 0u ? good : bad);
+            swprintf_s(reportLine, L"%u (%s)", init.CetRiskClass,
+                       CetRiskClassName(init.CetRiskClass));
+            emit(L"  CET Risk Class: ", reportLine,
+                 init.CetRiskClass == AMGER_CET_CLASS_UNKNOWN ? bad : good);
+            swprintf_s(reportLine,
+                       L"Gadget = 0x%016llX | Readback = %s | Pointer = %s",
+                       static_cast<unsigned long long>(init.RetGadget),
+                       (init.Flags & AMGER_INIT_FLAG_CFG_READBACK) != 0u
+                           ? L"Present" : L"Not Present",
+                       (init.Flags & AMGER_INIT_FLAG_CFG_ABSENT) != 0u
+                           ? L"Absent" : L"Present");
+            emit(L"  CFG Retarget: ", reportLine,
+                 (init.Flags & AMGER_INIT_FLAG_CFG) != 0u ? good : bad);
+            emit(L"  Execution Allowed: ",
+                 init.ExecutionAllowed != 0u ? L"Yes" : L"No",
+                 init.ExecutionAllowed != 0u ? good : bad);
             Console::WriteRaw(L"\n");
 
             const bool reverted =

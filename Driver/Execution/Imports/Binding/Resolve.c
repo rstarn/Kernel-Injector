@@ -175,7 +175,8 @@ static NTSTATUS ResolveSymbol(
                 }
             }
             if (!present) {
-                if (state->Report->DeferredModuleCount < 8u) {
+                if (state->Report->DeferredModuleCount <
+                    AMGER_REPORT_MAX_DEFERRED) {
                     CopyAscii(state->Report->DeferredModules[state->Report->DeferredModuleCount],
                               AMGER_REPORT_NAME_LENGTH, dllName);
                     ++state->Report->DeferredModuleCount;
