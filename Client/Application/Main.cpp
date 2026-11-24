@@ -254,6 +254,7 @@ const wchar_t* InitStageName(uint32_t stage) {
     case AMGER_INIT_STAGE_PDATA: return L"exception table";
     case AMGER_INIT_STAGE_CFG: return L"CFG retarget";
     case AMGER_INIT_STAGE_APC: return L"user APC";
+    case AMGER_INIT_STAGE_TLS_TEMPLATE: return L"TLS template too large";
     default: return L"unknown";
     }
 }
@@ -376,6 +377,10 @@ void InjectScreen(Session& session) {
         return;
     }
 
+    /* R13 is automatic: the PE entry (CRT startup) is the correct entry for
+     * every MSVC DLL because Phase 7 must initialise the CRT once. Named-export
+     * and ordinal selection stay available over the wire when a caller needs
+     * them, but the interactive client never asks and uses the verified path. */
     if (!session.channel.Connected() && !session.channel.Connect()) {
         Console::WriteLine(L"Device unavailable. Map the driver first.", Console::Brush::LightRed);
         return;
@@ -930,7 +935,7 @@ void InjectScreen(Session& session) {
             Console::WriteRaw(L"\n");
 
             swprintf_s(reportLine, L"%u", init.ThreadsPatched);
-            emit(L"  TEB Slots Set: ", reportLine,
+            emit(L"  TLS Threads Patched: ", reportLine,
                  (init.Flags & AMGER_INIT_FLAG_THREAD_TLS) != 0u ? good : bad);
             if (init.ThreadsPatched == 0u) {
                 swprintf_s(reportLine, L"Reasons = 0x%08X / Snapshot = %u",

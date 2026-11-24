@@ -14,6 +14,10 @@
  */
 
 #define AMGER_PAGE_SIZE_4K        0x1000u
+/* One TLS template block must be contiguous because user TLS accesses are
+ * base+offset behind a single TEB pointer. 64 KiB covers realistic
+ * __declspec(thread) arrays while bounding committed pages per thread. */
+#define AMGER_MAX_TLS_TEMPLATE    (64u * 1024u)
 /* Keep the callback budget at 16. Raising it grows the code[AMGER_STUB_MAX]
  * and job-block stack buffers in PrepareApcStub/InvokeEntry past 3.5 KiB,
  * close to the frame size that previously caused a 0x7f stack exhaustion in
@@ -38,11 +42,16 @@
 
 #define AMGER_PEB_TLS_BITMAP      0x078u
 #define AMGER_PEB_TLS_EXPANSION   0x238u
+/* TEB+0x58 is ThreadLocalStoragePointer: the pointer to the STATIC TLS vector
+ * indexed by the module's PE TLS index (MSVC `gs:[0x58]` -> [index*8]). TEB's
+ * TlsSlots (0x1480) and TlsExpansionSlots (0x1780) serve the explicit
+ * TlsAlloc/TlsSetValue API and are deliberately never touched here. */
 #define AMGER_TEB_TLS_POINTER     0x058u
 #define AMGER_TLS_MINIMUM         64u
 #define AMGER_TLS_EXPANSION_MAX   1024u
-/* A private 4 KiB page holds 512 pointers; cap the usable index to that so
- * array + index*8 never writes past the page we install in the TEB. */
+/* A private 4 KiB vector page holds 512 pointers. Cap the usable index so
+ * array + index*8 never writes past the page WE install at TEB+0x58; the TEB
+ * itself is only read and written at +0x58. */
 
 #define AMGER_TLS_INDEX_MAX       (AMGER_PAGE_SIZE_4K / sizeof(uint64_t))
 
@@ -223,6 +232,13 @@ typedef struct _AMGER_RUNTIME_STATE {
 } AMGER_RUNTIME_STATE, * PAMGER_RUNTIME_STATE;
 
 static AMGER_RUNTIME_STATE g_state;
+
+/* Forward declarations: the TLS installers (PatchThreadSlots and the R25
+ * attach path) precede the private-region helpers in this file. */
+static NTSTATUS AllocatePrivateRegion(PAMGER_RUNTIME_STATE state, uint64_t* out,
+                                      ULONG protect, SIZE_T bytes);
+static SIZE_T TlsBlockBytes(PAMGER_RUNTIME_STATE state);
+
 /* Separate from g_state so RtlZeroMemory on entry cannot release a guard
  * held by an in-flight initialization. */
 
@@ -262,6 +278,11 @@ typedef struct _AMGER_R25_STATE {
     uint64_t Datas[AMGER_R25_MAX_PAGES];
     uint64_t Blocks[AMGER_R25_MAX_PAGES];
     uint64_t Arrays[AMGER_R25_MAX_PAGES];
+    /* For an expansion TLS index the mapper installs a new static-TLS vector
+     * at TEB+0x58. Record the original pointer and whether we replaced it so
+     * cleanup can restore the TEB and free only our own vector page. */
+    uint64_t OriginalArrays[AMGER_R25_MAX_PAGES];
+    BOOLEAN ArrayReplaced[AMGER_R25_MAX_PAGES];
     uint64_t Tebs[AMGER_R25_MAX_PAGES];
     HANDLE Tids[AMGER_R25_MAX_PAGES];
     uint32_t PageCount;
@@ -844,9 +865,12 @@ static NTSTATUS InitTls(PAMGER_RUNTIME_STATE state) {
     }
     if (start == 0u || end <= start || start < state->Image->ImageBase ||
         end - state->Image->ImageBase > state->Image->SizeOfImage ||
-        (uint32_t)(end - start) == 0u ||
-        (uint32_t)(end - start) > AMGER_PAGE_SIZE_4K) {
+        (uint32_t)(end - start) == 0u) {
         return Fail(state, AMGER_INIT_STAGE_TLS_INDEX, STATUS_INVALID_PARAMETER);
+    }
+    if ((uint32_t)(end - start) > AMGER_MAX_TLS_TEMPLATE) {
+        return Fail(state, AMGER_INIT_STAGE_TLS_TEMPLATE,
+                    STATUS_INVALID_PARAMETER);
     }
 
     if (callbacks != 0u) {
@@ -1138,9 +1162,11 @@ static NTSTATUS PatchThreadSlots(PAMGER_RUNTIME_STATE state) {
                     BOOLEAN replaced = FALSE;
                     uint32_t needSlots = state->TlsIndexValue + 1u;
 
-                    /* The array must hold at least needSlots pointers. Windows
-                     * expands it lazily for index >= 64; a private page holds
-                     * 512 pointers, enough for any expansion index we pick. */
+                    /* The STATIC TLS vector at TEB+0x58 must hold at least
+                     * needSlots pointers. This mapper installs a private page
+                     * for expansion indices rather than relying on Windows'
+                     * separate explicit-TLS expansion machinery; 512 pointers
+                     * cover every index we allow. */
 
                     if (array == 0u ||
                         (needSlots > AMGER_TLS_MINIMUM && array != 0u)) {
@@ -1151,12 +1177,12 @@ static NTSTATUS PatchThreadSlots(PAMGER_RUNTIME_STATE state) {
                             continue;
                         }
                         if (array != 0u) {
-                            /* Preserve every existing slot below our index.
-                             * We claim the first free expansion bit, so all
-                             * other in-use indices are lower and must survive
-                             * the array replacement. needSlots is at most
-                             * AMGER_TLS_INDEX_MAX, so keep never exceeds the
-                             * 512-pointer page we install. */
+                            /* Preserve the slots below our index across the
+                             * vector swap. needSlots is bounded by
+                             * AMGER_TLS_INDEX_MAX (512), so keep never exceeds
+                             * the page we install. A fragmented bitmap could
+                             * leave a higher index in use; that is outside the
+                             * range we can preserve with a bounded copy. */
 
                             uint32_t keep = needSlots * 8u;
                             UCHAR* copy;
@@ -1183,8 +1209,9 @@ static NTSTATUS PatchThreadSlots(PAMGER_RUNTIME_STATE state) {
                         replaced = TRUE;
                     }
 
-                    if (!NT_SUCCESS(AllocatePrivatePage(state, &block,
-                                                        PAGE_READWRITE))) {
+                    if (!NT_SUCCESS(AllocatePrivateRegion(
+                            state, &block, PAGE_READWRITE,
+                            TlsBlockBytes(state)))) {
                         state->Report->TlsThreadSkipMask |= 0x10u;
                         if (replaced) {
                             (void)UserWrite(state->Process,
@@ -1245,13 +1272,22 @@ static NTSTATUS PatchThreadSlots(PAMGER_RUNTIME_STATE state) {
 /* Private pages, user APC stub and job execution                     */
 /* ------------------------------------------------------------------ */
 
-static NTSTATUS AllocatePrivatePage(PAMGER_RUNTIME_STATE state,
-                                    uint64_t* out, ULONG protect) {
+/* Allocate one contiguous private region of the requested byte count. TLS
+ * templates larger than a page must stay contiguous behind a single TEB slot;
+ * one ZwAllocateVirtualMemory call guarantees that in virtual address space.
+ * MEM_RELEASE in ReleasePrivatePage ignores the size, so no bookkeeping of the
+ * page count is needed on free. */
+static NTSTATUS AllocatePrivateRegion(PAMGER_RUNTIME_STATE state,
+                                      uint64_t* out, ULONG protect,
+                                      SIZE_T bytes) {
     PVOID base = NULL;
-    SIZE_T size = AMGER_PAGE_SIZE_4K;
+    SIZE_T size = bytes;
     KAPC_STATE apc;
     NTSTATUS status;
 
+    if (bytes == 0u || (bytes & (AMGER_PAGE_SIZE_4K - 1u)) != 0u) {
+        return STATUS_INVALID_PARAMETER;
+    }
     KeStackAttachProcess((PRKPROCESS)state->Process, &apc);
     status = ZwAllocateVirtualMemory(ZwCurrentProcess(), &base, 0u,
                                      &size, MEM_COMMIT, protect);
@@ -1261,6 +1297,18 @@ static NTSTATUS AllocatePrivatePage(PAMGER_RUNTIME_STATE state,
     }
     *out = (uint64_t)(uintptr_t)base;
     return STATUS_SUCCESS;
+}
+
+static NTSTATUS AllocatePrivatePage(PAMGER_RUNTIME_STATE state,
+                                    uint64_t* out, ULONG protect) {
+    return AllocatePrivateRegion(state, out, protect, AMGER_PAGE_SIZE_4K);
+}
+
+/* Round the measured template length up to whole pages for the per-thread
+ * block. The template buffer itself keeps the exact TlsRawBytes length. */
+static SIZE_T TlsBlockBytes(PAMGER_RUNTIME_STATE state) {
+    return ((SIZE_T)state->TlsRawBytes + AMGER_PAGE_SIZE_4K - 1u) &
+           ~((SIZE_T)AMGER_PAGE_SIZE_4K - 1u);
 }
 
 static VOID ApcKernelRoutine(struct _KAPC* apc,
@@ -2091,6 +2139,8 @@ static VOID AmgerR25AttachThread(HANDLE threadId) {
     PETHREAD thread = NULL;
     PVOID teb = NULL;
     uint64_t array = 0u;
+    uint64_t originalArray = 0u;
+    uint64_t freshArray = 0u;
     uint64_t block = 0u;
     uint64_t codePage = 0u;
     uint64_t dataPage = 0u;
@@ -2098,6 +2148,9 @@ static VOID AmgerR25AttachThread(HANDLE threadId) {
     uint32_t count = 0u;
     uint32_t i;
     uint32_t zero = 0u;
+    uint32_t needSlots;
+    BOOLEAN arrayReplaced = FALSE;
+    BOOLEAN ok = FALSE;
     UCHAR code[AMGER_STUB_MAX];
     AMGER_JOB jobs[AMGER_MAX_JOBS];
     PRKAPC apc;
@@ -2113,28 +2166,60 @@ static VOID AmgerR25AttachThread(HANDLE threadId) {
         return;
     }
     teb = PsGetThreadTeb(thread);
-    if (teb == NULL || g_state.TlsIndexValue >= AMGER_TLS_MINIMUM) {
+    /* Expansion indices are supported below by installing a private static-TLS
+     * vector at TEB+0x58; only an impossible slot count or a missing TEB is a
+     * reason to skip the attach. */
+    needSlots = g_state.TlsIndexValue + 1u;
+    if (teb == NULL || needSlots == 0u || needSlots > AMGER_TLS_INDEX_MAX) {
         ObDereferenceObject(thread);
         (void)InterlockedIncrement(&g_r25.AttachFailed);
         return;
     }
     RtlZeroMemory(&scratch, sizeof(scratch));
     scratch.Process = g_r25.Process;
-    if (!NT_SUCCESS(AllocatePrivatePage(&scratch, &block, PAGE_READWRITE)) ||
+    if (!NT_SUCCESS(AllocatePrivateRegion(&scratch, &block, PAGE_READWRITE,
+                                          TlsBlockBytes(&g_state))) ||
         !NT_SUCCESS(AllocatePrivatePage(&scratch, &codePage, PAGE_READWRITE)) ||
         !NT_SUCCESS(AllocatePrivatePage(&scratch, &dataPage, PAGE_READWRITE))) {
-        ReleasePrivatePage(&scratch, &block);
-        ReleasePrivatePage(&scratch, &codePage);
-        ReleasePrivatePage(&scratch, &dataPage);
-        ObDereferenceObject(thread);
-        (void)InterlockedIncrement(&g_r25.AttachFailed);
-        return;
+        goto fail;
     }
     KeStackAttachProcess((PRKPROCESS)g_r25.Process, &apcState);
     array = 0u;
     (void)UserRead(g_r25.Process, (uint64_t)(uintptr_t)teb +
                    AMGER_TEB_TLS_POINTER, &array, sizeof(array));
-    if (array != 0u && g_state.TlsTemplate != NULL &&
+    originalArray = array;
+    /* An expansion index needs more slots than the primary TEB vector holds.
+     * Install a private 512-pointer vector, copying the live entries, and
+     * record the original pointer so cleanup can restore it. TEB+0x1480
+     * (TlsSlots) and TEB+0x1780 (TlsExpansionSlots) belong to explicit
+     * TlsAlloc/TlsSetValue and are deliberately never touched. */
+    if (array == 0u || needSlots > AMGER_TLS_MINIMUM) {
+        UCHAR* copy;
+        SIZE_T keep = (SIZE_T)needSlots * 8u;
+        if (!NT_SUCCESS(AllocatePrivatePage(&scratch, &freshArray,
+                                            PAGE_READWRITE))) {
+            KeUnstackDetachProcess(&apcState);
+            goto fail;
+        }
+        if (array != 0u) {
+#pragma warning(suppress : 4996)
+            copy = (UCHAR*)ExAllocatePoolWithTag(NonPagedPoolNx, keep, 'grmC');
+            if (copy != NULL) {
+                if (UserRead(g_r25.Process, array, copy, keep)) {
+                    (void)UserWrite(g_r25.Process, freshArray, copy, keep);
+                }
+                ExFreePoolWithTag(copy, 'grmC');
+            }
+        }
+        if (!UserWrite(g_r25.Process, (uint64_t)(uintptr_t)teb +
+                       AMGER_TEB_TLS_POINTER, &freshArray, sizeof(freshArray))) {
+            KeUnstackDetachProcess(&apcState);
+            goto fail;
+        }
+        array = freshArray;
+        arrayReplaced = TRUE;
+    }
+    if (g_state.TlsTemplate != NULL &&
         UserWrite(g_r25.Process, block, g_state.TlsTemplate,
                   g_state.TlsRawBytes) &&
         UserWrite(g_r25.Process, array +
@@ -2159,46 +2244,32 @@ static VOID AmgerR25AttachThread(HANDLE threadId) {
             (void)UserWrite(g_r25.Process, codePage, code,
                             (uint32_t)(21u + (65u * count) + 22u));
         }
-    } else {
-        array = 0u;
+        ok = TRUE;
     }
     KeUnstackDetachProcess(&apcState);
 
-    if (array == 0u || count == 0u ||
+    if (!ok || count == 0u ||
         !PromoteR25CodePage(g_r25.Process, codePage)) {
-        ReleasePrivatePage(&scratch, &block);
-        ReleasePrivatePage(&scratch, &codePage);
-        ReleasePrivatePage(&scratch, &dataPage);
-        ObDereferenceObject(thread);
-        (void)InterlockedIncrement(&g_r25.AttachFailed);
-        return;
+        goto fail;
     }
-    if (g_r25.PageCount < AMGER_R25_MAX_PAGES) {
-        g_r25.Codes[g_r25.PageCount] = codePage;
-        g_r25.Datas[g_r25.PageCount] = dataPage;
-        g_r25.Blocks[g_r25.PageCount] = block;
-        g_r25.Arrays[g_r25.PageCount] = array;
-        g_r25.Tebs[g_r25.PageCount] = (uint64_t)(uintptr_t)teb;
-        g_r25.Tids[g_r25.PageCount] = threadId;
-        ++g_r25.PageCount;
-    } else {
-        zero = 0u;
-        (void)UserWrite(g_r25.Process, array +
-                        ((uint64_t)g_state.TlsIndexValue * 8u),
-                        &zero, sizeof(zero));
-        ReleasePrivatePage(&scratch, &block);
-        ReleasePrivatePage(&scratch, &codePage);
-        ReleasePrivatePage(&scratch, &dataPage);
-        ObDereferenceObject(thread);
-        (void)InterlockedIncrement(&g_r25.AttachFailed);
-        return;
+    if (g_r25.PageCount >= AMGER_R25_MAX_PAGES) {
+        goto fail;
     }
+    g_r25.Codes[g_r25.PageCount] = codePage;
+    g_r25.Datas[g_r25.PageCount] = dataPage;
+    g_r25.Blocks[g_r25.PageCount] = block;
+    g_r25.Arrays[g_r25.PageCount] = array;
+    g_r25.OriginalArrays[g_r25.PageCount] = originalArray;
+    g_r25.ArrayReplaced[g_r25.PageCount] = arrayReplaced;
+    g_r25.Tebs[g_r25.PageCount] = (uint64_t)(uintptr_t)teb;
+    g_r25.Tids[g_r25.PageCount] = threadId;
+    ++g_r25.PageCount;
 #pragma warning(suppress : 4996 28197)
     apc = (PRKAPC)ExAllocatePoolWithTag(NonPagedPoolNx, sizeof(KAPC), 'grmP');
     if (apc == NULL) {
-        (void)InterlockedIncrement(&g_r25.AttachFailed);
-        ObDereferenceObject(thread);
-        return;
+        /* The slot was published above; remove it before fail frees the pages. */
+        --g_r25.PageCount;
+        goto fail;
     }
     KeInitializeApc(apc, (PRKTHREAD)thread, AmgerOriginalApcEnvironment,
                     AmgerR25ApcKernelRoutine, AmgerR25ApcRundownRoutine,
@@ -2213,9 +2284,41 @@ static VOID AmgerR25AttachThread(HANDLE threadId) {
         (void)InterlockedDecrement(&g_r25.PendingApcs);
         (void)InterlockedDecrement(&g_apcOutstanding);
         ExFreePoolWithTag(apc, 'grmP');
-        (void)InterlockedIncrement(&g_r25.AttachFailed);
+        /* The slot was published above; roll it back with the pages. */
+        --g_r25.PageCount;
+        goto fail;
     }
     ObDereferenceObject(thread);
+    return;
+
+fail:
+    /* Clear our 8-byte TLS slot before anything it points at is freed. This
+     * matters when the vector was NOT replaced: the slot lives in the process'
+     * own vector and would otherwise dangle at the block released below. The
+     * completion marker is only 4 bytes, so it cannot serve as this zero. */
+    {
+        uint64_t slotZero = 0u;
+        if (array != 0u) {
+            (void)UserWrite(g_r25.Process, array +
+                            ((uint64_t)g_state.TlsIndexValue * 8u),
+                            &slotZero, sizeof(slotZero));
+        }
+    }
+    /* Undo a vector swap before freeing the pages the APC would read through
+     * it. Restore runs without an attach; UserWrite uses the process object. */
+    if (arrayReplaced && teb != NULL) {
+        (void)UserWrite(g_r25.Process, (uint64_t)(uintptr_t)teb +
+                        AMGER_TEB_TLS_POINTER, &originalArray,
+                        sizeof(originalArray));
+    }
+    if (freshArray != 0u) {
+        ReleasePrivatePage(&scratch, &freshArray);
+    }
+    ReleasePrivatePage(&scratch, &block);
+    ReleasePrivatePage(&scratch, &codePage);
+    ReleasePrivatePage(&scratch, &dataPage);
+    ObDereferenceObject(thread);
+    (void)InterlockedIncrement(&g_r25.AttachFailed);
 }
 
 WORKER_THREAD_ROUTINE AmgerTlsWorkItem;
@@ -2285,18 +2388,31 @@ static VOID UnregisterThreadTlsNotify(VOID) {
     }
     RtlZeroMemory(&scratch, sizeof(scratch));
     scratch.Process = g_r25.Process;
-    for (i = 0u; i < g_r25.PageCount; ++i) {
-        if (g_r25.Arrays[i] != 0u) {
-            (void)UserWrite(g_r25.Process, g_r25.Arrays[i] +
-                            ((uint64_t)g_state.TlsIndexValue * 8u),
-                            &zero, sizeof(zero));
-        }
-        ReleasePrivatePage(&scratch, &g_r25.Blocks[i]);
-        if (g_r25.PendingApcs == 0L &&
-            InterlockedCompareExchange(&g_apcOutstanding, 0L, 0L) == 0L &&
-            !InitializeApcOutstanding()) {
+    /* Every page below is read by the queued stub through either the code/data
+     * pair or the installed static-TLS vector. Gate ALL releases on the same
+     * drain condition; releasing the block while an APC can still run would
+     * leave a dangling TEB slot. */
+    if (g_r25.PendingApcs == 0L &&
+        InterlockedCompareExchange(&g_apcOutstanding, 0L, 0L) == 0L &&
+        !InitializeApcOutstanding()) {
+        for (i = 0u; i < g_r25.PageCount; ++i) {
+            if (g_r25.Arrays[i] != 0u) {
+                (void)UserWrite(g_r25.Process, g_r25.Arrays[i] +
+                                ((uint64_t)g_state.TlsIndexValue * 8u),
+                                &zero, sizeof(zero));
+            }
+            if (g_r25.ArrayReplaced[i] && g_r25.Tebs[i] != 0u) {
+                (void)UserWrite(g_r25.Process, g_r25.Tebs[i] +
+                                AMGER_TEB_TLS_POINTER,
+                                &g_r25.OriginalArrays[i],
+                                sizeof(g_r25.OriginalArrays[i]));
+            }
+            ReleasePrivatePage(&scratch, &g_r25.Blocks[i]);
             ReleasePrivatePage(&scratch, &g_r25.Codes[i]);
             ReleasePrivatePage(&scratch, &g_r25.Datas[i]);
+            if (g_r25.ArrayReplaced[i]) {
+                ReleasePrivatePage(&scratch, &g_r25.Arrays[i]);
+            }
         }
     }
     ObDereferenceObject(g_r25.Process);

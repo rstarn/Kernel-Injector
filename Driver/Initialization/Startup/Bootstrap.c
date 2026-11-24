@@ -37,6 +37,22 @@ IoCreateDriver(
     _In_ PDRIVER_INITIALIZE InitializationFunction
     );
 
+/* KeQuerySystemTime is a macro in wdm.h on x64 (it reads KI_USER_SHARED_DATA
+ * directly) and a function prototype in other configurations. Static analysers
+ * preprocessed with a different NTDDI/_KERNEL_MODE configuration can see
+ * neither, producing an implicit-declaration error. Guard on the macro name:
+ * when the macro exists the call site expands normally and no declaration is
+ * needed; when it does not, restate the documented prototype so the call is
+ * type-checked. Never declare the identifier while its macro is defined, since
+ * the macro would expand inside the declaration itself. */
+#ifndef KeQuerySystemTime
+NTKERNELAPI
+VOID
+KeQuerySystemTime(
+    _Out_ PLARGE_INTEGER CurrentTime
+    );
+#endif
+
 /* ObSetSecurityObjectByPointer is documented and exported by ntoskrnl.lib but
  * the installed WDK header set does not declare it. The documented prototype
  * is repeated here so the call is type-checked; the link proves the export. */

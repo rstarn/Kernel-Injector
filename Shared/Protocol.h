@@ -60,8 +60,12 @@
                                  AMGER_OPTION_HEADER_ERASURE)
 
 /* R13 entry selection, carried in AMGER_COMMAND_HEADER.Reserved[16..63].
- * PE_ENTRY calls the mapped image's AddressOfEntryPoint (_DllMainCRTStartup
- * for an MSVC DLL). Export modes select the payload entry used by Phase 8. */
+ * All three kinds are resolved and called once by Phase 7 through the user
+ * APC: PE_ENTRY calls AddressOfEntryPoint (_DllMainCRTStartup for an MSVC
+ * DLL), EXPORT_NAME and ORDINAL call a mapped export with the same three
+ * arguments. The interactive client uses PE_ENTRY automatically because the
+ * CRT startup must run once for every MSVC DLL; the other kinds remain
+ * available to wire callers that need them. */
 
 #define AMGER_ENTRY_KIND_PE_ENTRY     0u
 #define AMGER_ENTRY_KIND_EXPORT_NAME  1u
@@ -347,6 +351,9 @@ typedef struct _AMGER_DEP_REPORT {
 #define AMGER_INIT_STAGE_PDATA       11u
 #define AMGER_INIT_STAGE_CFG         12u
 #define AMGER_INIT_STAGE_APC         13u
+/* The TLS raw template exceeds AMGER_MAX_TLS_TEMPLATE; distinct from a
+ * malformed TLS directory so the client can name the real cause. */
+#define AMGER_INIT_STAGE_TLS_TEMPLATE 14u
 
 /* R6 measured manifest states. No activation context is created: the mapper
  * resolves imports in Phase 4 without SxS binding, and a manually mapped image
