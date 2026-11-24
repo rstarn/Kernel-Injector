@@ -882,12 +882,12 @@ void InjectScreen(Session& session) {
             }
             Console::WriteRaw(L"\n");
 
+            swprintf_s(reportLine, L"0x%08X", init.GuardFlags);
+            emit(L"  Guard Flags: ", reportLine,
+                 (init.Flags & AMGER_INIT_FLAG_LOAD_CONFIG) != 0u ? good : bad);
             swprintf_s(reportLine, L"RVA 0x%08X | 0x%08X bytes | struct 0x%08X",
                        init.LoadConfigRva, init.LoadConfigSize, init.StructSize);
             emit(L"  Load Config: ", reportLine,
-                 (init.Flags & AMGER_INIT_FLAG_LOAD_CONFIG) != 0u ? good : bad);
-            swprintf_s(reportLine, L"0x%08X", init.GuardFlags);
-            emit(L"  Guard Flags: ", reportLine,
                  (init.Flags & AMGER_INIT_FLAG_LOAD_CONFIG) != 0u ? good : bad);
             Console::WriteRaw(L"\n");
 
@@ -966,33 +966,27 @@ void InjectScreen(Session& session) {
                  init.ApcStubStarted != 0u ? good : bad);
             Console::WriteRaw(L"\n");
 
+            /* Within each group, lines run shortest to longest. */
+            emit(L"  CET Execution Allowed: ",
+                 init.ExecutionAllowed != 0u ? L"Yes" : L"No",
+                 init.ExecutionAllowed != 0u ? good : bad);
+            swprintf_s(reportLine, L"%u (%s)", init.CetRiskClass,
+                       CetRiskClassName(init.CetRiskClass));
+            emit(L"  CET Risk Class: ", reportLine,
+                 init.CetRiskClass == AMGER_CET_CLASS_UNKNOWN ? bad : good);
             swprintf_s(reportLine, L"%u tables / %u entries", init.PdataTables,
                        init.PdataEntries);
             emit(L"  Exception Tables: ", reportLine,
                  (init.Flags & AMGER_INIT_FLAG_PDATA) != 0u ? good : bad);
-
             swprintf_s(reportLine, L"%u bytes @ 0x%016llX", init.DetourBytes,
                        static_cast<unsigned long long>(init.DetourAddress));
             emit(L"  PC-to-File Detour: ", reportLine,
                  (init.Flags & AMGER_INIT_FLAG_PC_DETOUR) != 0u ? good : bad);
-
             swprintf_s(reportLine, L"0x%016llX -> 0x%016llX",
                        static_cast<unsigned long long>(init.CfgCheckBefore),
                        static_cast<unsigned long long>(init.CfgCheckAfter));
             emit(L"  CFG Check Pointer: ", reportLine,
                  (init.Flags & AMGER_INIT_FLAG_CFG) != 0u ? good : bad);
-
-            swprintf_s(reportLine,
-                       L"0x%08X | Returned = %u | CFG = 0x%08X / Shadow Stack = 0x%08X / Dynamic Code = 0x%08X",
-                       init.MitigationQueryStatus, init.MitigationReturnLength,
-                       init.CfgPolicyFlags, init.ShadowStackPolicyFlags,
-                       init.DynamicCodePolicyFlags);
-            emit(L"  Mitigation Probe: ", reportLine,
-                 init.MitigationQueryStatus == 0u ? good : bad);
-            swprintf_s(reportLine, L"%u (%s)", init.CetRiskClass,
-                       CetRiskClassName(init.CetRiskClass));
-            emit(L"  CET Risk Class: ", reportLine,
-                 init.CetRiskClass == AMGER_CET_CLASS_UNKNOWN ? bad : good);
             swprintf_s(reportLine,
                        L"Gadget = 0x%016llX | Readback = %s | Pointer = %s",
                        static_cast<unsigned long long>(init.RetGadget),
@@ -1002,9 +996,13 @@ void InjectScreen(Session& session) {
                            ? L"Absent" : L"Present");
             emit(L"  CFG Retarget: ", reportLine,
                  (init.Flags & AMGER_INIT_FLAG_CFG) != 0u ? good : bad);
-            emit(L"  CET Execution Allowed: ",
-                 init.ExecutionAllowed != 0u ? L"Yes" : L"No",
-                 init.ExecutionAllowed != 0u ? good : bad);
+            swprintf_s(reportLine,
+                       L"0x%08X | Returned = %u | CFG = 0x%08X / Shadow Stack = 0x%08X / Dynamic Code = 0x%08X",
+                       init.MitigationQueryStatus, init.MitigationReturnLength,
+                       init.CfgPolicyFlags, init.ShadowStackPolicyFlags,
+                       init.DynamicCodePolicyFlags);
+            emit(L"  Mitigation Probe: ", reportLine,
+                 init.MitigationQueryStatus == 0u ? good : bad);
             Console::WriteRaw(L"\n");
 
             const bool reverted =
