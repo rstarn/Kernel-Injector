@@ -983,9 +983,10 @@ void InjectScreen(Session& session) {
                  (init.Flags & AMGER_INIT_FLAG_CFG) != 0u ? good : bad);
 
             swprintf_s(reportLine,
-                       L"0x%08X | CFG = 0x%08X / Shadow Stack = 0x%08X / Dynamic Code = 0x%08X",
-                       init.MitigationQueryStatus, init.CfgPolicyFlags,
-                       init.ShadowStackPolicyFlags, init.DynamicCodePolicyFlags);
+                       L"0x%08X | Returned = %u | CFG = 0x%08X / Shadow Stack = 0x%08X / Dynamic Code = 0x%08X",
+                       init.MitigationQueryStatus, init.MitigationReturnLength,
+                       init.CfgPolicyFlags, init.ShadowStackPolicyFlags,
+                       init.DynamicCodePolicyFlags);
             emit(L"  Mitigation Probe: ", reportLine,
                  init.MitigationQueryStatus == 0u ? good : bad);
             swprintf_s(reportLine, L"%u (%s)", init.CetRiskClass,

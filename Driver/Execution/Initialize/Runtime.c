@@ -379,21 +379,34 @@ done:
 /* ------------------------------------------------------------------ */
 
 static NTSTATUS QueryMitigation(HANDLE handle, uint32_t policy,
-                                uint32_t* outFlags) {
+                                uint32_t* outFlags, ULONG* outReturned) {
+    /* PROCESS_MITIGATION_POLICY_INFORMATION is { POLICY, union of policy
+     * structs }. The exact union size is not published in the WDK headers, so
+     * pass a generously sized zeroed buffer and read the flags at +4. Some
+     * builds report only the 4-byte union in ReturnLength; do not reject that. */
+    UCHAR buffer[64];
     AMGER_MITIGATION_QUERY query;
     ULONG returned = 0u;
     NTSTATUS status;
 
+    RtlZeroMemory(buffer, sizeof(buffer));
     query.Policy = policy;
     query.Flags = 0u;
+    RtlCopyMemory(buffer, &query, sizeof(query));
     status = ZwQueryInformationProcess(handle, AMGER_PROCESS_MITIGATION_CLASS,
-                                       &query, sizeof(query), &returned);
+                                       buffer, sizeof(buffer), &returned);
+    if (status == STATUS_INFO_LENGTH_MISMATCH) {
+        /* Some builds require the exact structure size rather than a larger
+         * buffer. Retry with the documented { POLICY, Flags } layout. */
+        returned = 0u;
+        status = ZwQueryInformationProcess(handle, AMGER_PROCESS_MITIGATION_CLASS,
+                                           buffer, sizeof(query), &returned);
+    }
+    *outReturned = returned;
     if (!NT_SUCCESS(status)) {
         return status;
     }
-    if (returned < sizeof(query)) {
-        return STATUS_INFO_LENGTH_MISMATCH;
-    }
+    RtlCopyMemory(&query, buffer, sizeof(query));
     *outFlags = query.Flags;
     return STATUS_SUCCESS;
 }
@@ -407,6 +420,7 @@ static VOID ProbeMitigations(PAMGER_RUNTIME_STATE state) {
     uint32_t cfg = 0u;
     uint32_t shadow = 0u;
     uint32_t dynamicCode = 0u;
+    ULONG returned = 0u;
     NTSTATUS status;
 
     InitializeObjectAttributes(&attributes, NULL, OBJ_KERNEL_HANDLE,
@@ -416,20 +430,22 @@ static VOID ProbeMitigations(PAMGER_RUNTIME_STATE state) {
     status = ZwOpenProcess(&handle, AMGER_MITIGATION_ACCESS,
                            &attributes, &clientId);
     if (NT_SUCCESS(status)) {
-        status = QueryMitigation(handle, AMGER_PROCESS_MITIGATION_CFG, &cfg);
+        status = QueryMitigation(handle, AMGER_PROCESS_MITIGATION_CFG, &cfg,
+                                 &returned);
         if (NT_SUCCESS(status)) {
             status = QueryMitigation(handle,
                                      AMGER_PROCESS_MITIGATION_USER_SHADOW_STACK,
-                                     &shadow);
+                                     &shadow, &returned);
         }
         if (NT_SUCCESS(status)) {
             status = QueryMitigation(handle,
                                      AMGER_PROCESS_MITIGATION_DYNAMIC_CODE,
-                                     &dynamicCode);
+                                     &dynamicCode, &returned);
         }
         ZwClose(handle);
     }
     state->Report->MitigationQueryStatus = (uint32_t)status;
+    state->Report->MitigationReturnLength = returned;
     state->Report->CfgPolicyFlags = cfg;
     state->Report->ShadowStackPolicyFlags = shadow;
     state->Report->DynamicCodePolicyFlags = dynamicCode;

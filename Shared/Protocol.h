@@ -457,6 +457,7 @@ typedef struct _AMGER_INIT_REPORT {
     uint64_t CfgCheckAfter;
     uint64_t RetGadget;
     uint32_t MitigationQueryStatus;
+    uint32_t MitigationReturnLength;
     uint32_t CfgPolicyFlags;
     uint32_t ShadowStackPolicyFlags;
     uint32_t DynamicCodePolicyFlags;
