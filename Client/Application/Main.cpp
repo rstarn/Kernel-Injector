@@ -1001,7 +1001,7 @@ void InjectScreen(Session& session) {
                            ? L"Absent" : L"Present");
             emit(L"  CFG Retarget: ", reportLine,
                  (init.Flags & AMGER_INIT_FLAG_CFG) != 0u ? good : bad);
-            emit(L"  Execution Allowed: ",
+            emit(L"  CET Execution Allowed: ",
                  init.ExecutionAllowed != 0u ? L"Yes" : L"No",
                  init.ExecutionAllowed != 0u ? good : bad);
             Console::WriteRaw(L"\n");

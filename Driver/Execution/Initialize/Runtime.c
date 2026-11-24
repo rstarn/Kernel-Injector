@@ -14,7 +14,11 @@
  */
 
 #define AMGER_PAGE_SIZE_4K        0x1000u
-#define AMGER_MAX_TLS_CALLBACKS   32u
+/* Keep the callback budget at 16. Raising it grows the code[AMGER_STUB_MAX]
+ * and job-block stack buffers in PrepareApcStub/InvokeEntry past 3.5 KiB,
+ * close to the frame size that previously caused a 0x7f stack exhaustion in
+ * this call chain. Overflow is failed explicitly instead of being silent. */
+#define AMGER_MAX_TLS_CALLBACKS   16u
 /* One job per TLS callback plus the .pdata registration job, so a DLL with
  * the maximum callback count never silently loses either. */
 
@@ -85,16 +89,14 @@ NTKERNELAPI NTSTATUS ZwOpenProcess(
     PHANDLE ProcessHandle, ACCESS_MASK DesiredAccess,
     POBJECT_ATTRIBUTES ObjectAttributes, PCLIENT_ID ClientId);
 
-#ifndef PROCESS_QUERY_INFORMATION
-#define PROCESS_QUERY_INFORMATION 0x0400u
-#endif
 #ifndef PROCESS_QUERY_LIMITED_INFORMATION
 #define PROCESS_QUERY_LIMITED_INFORMATION 0x1000u
 #endif
-/* Win32 documents PROCESS_QUERY_INFORMATION for GetProcessMitigationPolicy;
- * request both rights so the native query is not rejected on either check. */
-#define AMGER_MITIGATION_ACCESS \
-    (PROCESS_QUERY_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION)
+/* The native ProcessMitigationPolicy class requires only LIMITED access.
+ * Win32 GetProcessMitigationPolicy documents QUERY_INFORMATION, but protected
+ * processes deny that right while granting LIMITED; requesting it here would
+ * fail closed on exactly the targets whose mitigations matter most. */
+#define AMGER_MITIGATION_ACCESS PROCESS_QUERY_LIMITED_INFORMATION
 
 /* PROCESS_MITIGATION_POLICY_INFORMATION: POLICY selector followed by the
  * policy-type Flags word. Both fields are 32-bit. */
@@ -102,6 +104,10 @@ typedef struct _AMGER_MITIGATION_QUERY {
     uint32_t Policy;
     uint32_t Flags;
 } AMGER_MITIGATION_QUERY, * PAMGER_MITIGATION_QUERY;
+
+/* PROCESS_MITIGATION_POLICY_INFORMATION is POLICY followed by a 4-byte union;
+ * every policy struct in winnt.h is one DWORD. Keep the wire size explicit. */
+C_ASSERT(sizeof(AMGER_MITIGATION_QUERY) == 8u);
 
 /* R25: a system-wide thread-notify callback. Its only safe job is enqueueing
  * an event and arming a passive-level work item; every user-memory access,
@@ -868,15 +874,21 @@ static NTSTATUS InitTls(PAMGER_RUNTIME_STATE state) {
                 }
             }
         }
-        /* The TLS callback array is NULL-terminated with no count field. If a
-         * 33rd entry is still non-NULL, more callbacks exist than we can run;
-         * failing here is honest, unlike silently skipping initializers. */
+        /* The TLS callback array is NULL-terminated with no count field. If
+         * the entry just past our budget is still non-NULL, more callbacks
+         * exist than we can run; failing here is honest, unlike silently
+         * skipping static initializers. */
         if (i == AMGER_MAX_TLS_CALLBACKS) {
+            uint64_t sentinel =
+                callbacksRemote + ((uint64_t)AMGER_MAX_TLS_CALLBACKS * 8u);
             uint64_t overflow = 0u;
-            if (UserRead(state->Process,
-                         callbacksRemote +
-                             ((uint64_t)AMGER_MAX_TLS_CALLBACKS * 8u),
-                         &overflow, 8u) &&
+            /* Only probe the terminator while it still lies inside the mapped
+             * image; UserRead is SEH-protected but there is no reason to read
+             * past the extent we were given. */
+            if (sentinel >= state->RemoteBase &&
+                sentinel - state->RemoteBase + 8u <=
+                    state->Image->SizeOfImage &&
+                UserRead(state->Process, sentinel, &overflow, 8u) &&
                 overflow != 0u) {
                 return Fail(state, AMGER_INIT_STAGE_TLS_CALLBACK,
                             STATUS_INVALID_PARAMETER);
@@ -1901,6 +1913,15 @@ static NTSTATUS RetargetCfg(PAMGER_RUNTIME_STATE state) {
         state->Report->Flags |= AMGER_INIT_FLAG_CFG;
         return STATUS_SUCCESS;
     }
+    if (state->CfgCheckAbsent) {
+        /* No check pointer exists in this image, so there is nothing to
+         * retarget. Do not write a gadget into a field the image never uses. */
+        state->CfgCheckAfter = state->CfgCheckBefore;
+        state->Report->CfgCheckAfter = state->CfgCheckAfter;
+        state->Report->RetGadget = 0u;
+        state->Report->Flags |= AMGER_INIT_FLAG_CFG;
+        return STATUS_SUCCESS;
+    }
     if (state->NtdllBase == 0u || state->NtdllSize == 0u) {
         return Fail(state, AMGER_INIT_STAGE_CFG, STATUS_NOT_FOUND);
     }
@@ -1946,20 +1967,26 @@ static NTSTATUS RetargetCfg(PAMGER_RUNTIME_STATE state) {
                    &gadget, sizeof(gadget))) {
         return Fail(state, AMGER_INIT_STAGE_CFG, STATUS_ACCESS_VIOLATION);
     }
+    /* The load-config field is the primary patched location. Read it back
+     * before publishing CfgCheckAfter so the value is measured, not assumed. */
+    if (!UserRead(state->Process, state->CfgCheckAddress,
+                  &state->CfgCheckAfter, sizeof(gadget)) ||
+        state->CfgCheckAfter != gadget) {
+        return Fail(state, AMGER_INIT_STAGE_CFG, STATUS_UNSUCCESSFUL);
+    }
     if (state->CfgCheckPointerAddress != 0u) {
+        uint64_t globalAfter = 0u;
         if (!UserWrite(state->Process, state->CfgCheckPointerAddress,
                        &gadget, sizeof(gadget))) {
             return Fail(state, AMGER_INIT_STAGE_CFG, STATUS_ACCESS_VIOLATION);
         }
         if (!UserRead(state->Process, state->CfgCheckPointerAddress,
-                      &state->CfgCheckAfter, sizeof(gadget)) ||
-            state->CfgCheckAfter != gadget) {
+                      &globalAfter, sizeof(gadget)) ||
+            globalAfter != gadget) {
             return Fail(state, AMGER_INIT_STAGE_CFG, STATUS_UNSUCCESSFUL);
         }
-        state->Report->Flags |= AMGER_INIT_FLAG_CFG_READBACK;
-    } else {
-        state->CfgCheckAfter = gadget;
     }
+    state->Report->Flags |= AMGER_INIT_FLAG_CFG_READBACK;
     state->Report->CfgCheckAfter = state->CfgCheckAfter;
     state->Report->Flags |= AMGER_INIT_FLAG_CFG;
     return STATUS_SUCCESS;

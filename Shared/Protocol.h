@@ -461,6 +461,9 @@ typedef struct _AMGER_INIT_REPORT {
     uint32_t ShadowStackPolicyFlags;
     uint32_t DynamicCodePolicyFlags;
     uint32_t CetRiskClass;
+    /* CET-scoped gate for the deferred return-address hijack (R27). It does
+     * not claim that CFG, dynamic-code policy or any other mitigation is
+     * absent; those are published separately above for the caller to judge. */
     uint32_t ExecutionAllowed;
     uint64_t RemoteBase;
 } AMGER_INIT_REPORT, * PAMGER_INIT_REPORT;
