@@ -41,6 +41,14 @@ VOID InitializeRevert(const AMGER_INIT_CONTEXT* Context);
 
 BOOLEAN InitializeApcOutstanding(VOID);
 
+/* Call once at the start of each inject. A prior inject that timed out leaves
+ * its image and stub pages deliberately mapped, so its stale stub can still
+ * run safely; clearing the counter here stops that one timeout from suppressing
+ * rollback and TLS cleanup for every later inject. Injects are serialized by
+ * the dispatcher's command mutex. */
+
+VOID InitializeResetApcGate(VOID);
+
 /* Phase 7 resolves the selected entry, calls the image's CRT entry once with
  * DLL_PROCESS_ATTACH through a dedicated user APC, then erases the mapped PE
  * headers while they are still writable. It must run after InitializePhase

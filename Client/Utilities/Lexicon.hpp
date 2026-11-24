@@ -27,25 +27,28 @@ static constexpr std::array<wchar_t, 21> kL12 = { 0x5A6F, 0x5A69, 0x5A7F, 0x5A6B
 static constexpr std::array<wchar_t, 28> kL13 = { 0x5A6F, 0x5A69, 0x5A7F, 0x5A6B, 0x5A15, 0x5A12, 0x5A1D, 0x5A0A, 0x5A0A, 0x5A13, 0x5A07, 0x5A0B, 0x5A01, 0x5A0D, 0x5A15, 0x5A0F, 0x5A09, 0x5A1B, 0x5A07, 0x5A0C, 0x5A15, 0x5A0E, 0x5A01, 0x5A07, 0x5A15, 0x5A01, 0x5A13, 0x5A57 };
 static constexpr std::array<wchar_t, 17> kL14 = { 0x5A6F, 0x5A69, 0x5A7F, 0x5A6B, 0x5A15, 0x5A12, 0x5A1D, 0x5A0D, 0x5A0B, 0x5A11, 0x5A19, 0x5A01, 0x5A07, 0x5A1C, 0x5A04, 0x5A0F, 0x5A4C };
 static constexpr std::array<wchar_t, 13> kL15 = { 0x5A6F, 0x5A69, 0x5A7F, 0x5A6B, 0x5A15, 0x5A12, 0x5A1D, 0x5A11, 0x5A01, 0x5A11, 0x5A14, 0x5A1E, 0x5A48 };
-static constexpr std::array<wchar_t, 16> kL16 = { 0x5A74, 0x5A78, 0x5A7F, 0x5A7B, 0x5A05, 0x5A13, 0x5A1D, 0x5A15, 0x5A05, 0x5A09, 0x5A0F, 0x5A03, 0x5A09, 0x5A1D, 0x5A0F, 0x5A4B };
-static constexpr std::array<wchar_t, 15> kL17 = { 0x5A7F, 0x5A72, 0x5A73, 0x5A72, 0x5A01, 0x5A0F, 0x5A06, 0x5A1C, 0x5A00, 0x5A00, 0x5A05, 0x5A08, 0x5A0C, 0x5A0C, 0x5A4A };
-static constexpr std::array<wchar_t, 14> kL18 = { 0x5A6C, 0x5A7C, 0x5A67, 0x5A73, 0x5A0F, 0x5A00, 0x5A06, 0x5A1C, 0x5A16, 0x5A04, 0x5A08, 0x5A00, 0x5A0D, 0x5A49 };
-static constexpr std::array<wchar_t, 5> kL19 = { 0x5A6C, 0x5A74, 0x5A70, 0x5A78, 0x5A40 };
-static constexpr std::array<wchar_t, 7> kL20 = { 0x5A75, 0x5A73, 0x5A74, 0x5A7A, 0x5A03, 0x5A15, 0x5A42 };
-static constexpr std::array<wchar_t, 6> kL21 = { 0x5A79, 0x5A77, 0x5A7B, 0x5A7C, 0x5A14, 0x5A41 };
-static constexpr std::array<wchar_t, 15> kL22 = { 0x5A6F, 0x5A69, 0x5A7F, 0x5A6B, 0x5A15, 0x5A12, 0x5A1D, 0x5A00, 0x5A0B, 0x5A08, 0x5A0B, 0x5A06, 0x5A06, 0x5A0D, 0x5A4A };
-static constexpr std::array<wchar_t, 7> kL23 = { 0x5A6E, 0x5A78, 0x5A6D, 0x5A6A, 0x5A0C, 0x5A15, 0x5A42 };
-static constexpr std::array<wchar_t, 13> kL24 = { 0x5A6E, 0x5A78, 0x5A79, 0x5A76, 0x5A13, 0x5A15, 0x5A07, 0x5A11, 0x5A1B, 0x5A08, 0x5A02, 0x5A0B, 0x5A48 };
-static constexpr std::array<wchar_t, 16> kL25 = { 0x5A6E, 0x5A78, 0x5A79, 0x5A76, 0x5A13, 0x5A15, 0x5A07, 0x5A11, 0x5A1B, 0x5A06, 0x5A09, 0x5A0A, 0x5A05, 0x5A00, 0x5A1E, 0x5A4B };
-static constexpr std::array<wchar_t, 14> kL26 = { 0x5A7F, 0x5A71, 0x5A7B, 0x5A7E, 0x5A0E, 0x5A14, 0x5A12, 0x5A1C, 0x5A00, 0x5A17, 0x5A07, 0x5A0E, 0x5A06, 0x5A49 };
-static constexpr std::array<wchar_t, 14> kL27 = { 0x5A7F, 0x5A71, 0x5A71, 0x5A6C, 0x5A05, 0x5A1E, 0x5A10, 0x5A06, 0x5A07, 0x5A09, 0x5A07, 0x5A0E, 0x5A05, 0x5A49 };
-static constexpr std::array<wchar_t, 13> kL28 = { 0x5A69, 0x5A73, 0x5A72, 0x5A70, 0x5A01, 0x5A05, 0x5A1D, 0x5A0C, 0x5A13, 0x5A0B, 0x5A03, 0x5A15, 0x5A48 };
-static constexpr std::array<wchar_t, 15> kL29 = { 0x5A6F, 0x5A73, 0x5A7F, 0x5A6F, 0x5A13, 0x5A09, 0x5A0D, 0x5A17, 0x5A1B, 0x5A17, 0x5A03, 0x5A13, 0x5A1A, 0x5A10, 0x5A4A };
-static constexpr std::array<wchar_t, 14> kL30 = { 0x5A6C, 0x5A7C, 0x5A67, 0x5A73, 0x5A0F, 0x5A00, 0x5A06, 0x5A1C, 0x5A0D, 0x5A08, 0x5A07, 0x5A00, 0x5A0D, 0x5A49 };
-static constexpr std::array<wchar_t, 15> kL31 = { 0x5A75, 0x5A73, 0x5A74, 0x5A7A, 0x5A03, 0x5A15, 0x5A1D, 0x5A13, 0x5A16, 0x5A0A, 0x5A05, 0x5A02, 0x5A1B, 0x5A1A, 0x5A4A };
-static constexpr std::array<wchar_t, 15> kL32 = { 0x5A75, 0x5A73, 0x5A74, 0x5A7A, 0x5A03, 0x5A15, 0x5A1D, 0x5A0E, 0x5A05, 0x5A15, 0x5A16, 0x5A0E, 0x5A06, 0x5A0E, 0x5A4A };
-static constexpr std::array<wchar_t, 14> kL33 = { 0x5A75, 0x5A73, 0x5A74, 0x5A7A, 0x5A03, 0x5A15, 0x5A1D, 0x5A17, 0x5A0C, 0x5A17, 0x5A03, 0x5A06, 0x5A0C, 0x5A49 };
-static constexpr std::array<wchar_t, 6> kL34 = { 0x5A79, 0x5A73, 0x5A6A, 0x5A6D, 0x5A19, 0x5A41 };
+static constexpr std::array<wchar_t, 20> kL16 = { 0x5A6F, 0x5A69, 0x5A7F, 0x5A6B, 0x5A15, 0x5A12, 0x5A1D, 0x5A12, 0x5A11, 0x5A00, 0x5A14, 0x5A1E, 0x5A17, 0x5A0F, 0x5A0B, 0x5A02, 0x5A00, 0x5A08, 0x5A0A, 0x5A4F };
+static constexpr std::array<wchar_t, 14> kL17 = { 0x5A7E, 0x5A7C, 0x5A7A, 0x5A60, 0x5A01, 0x5A13, 0x5A05, 0x5A16, 0x5A09, 0x5A00, 0x5A08, 0x5A13, 0x5A1B, 0x5A49 };
+static constexpr std::array<wchar_t, 15> kL18 = { 0x5A69, 0x5A73, 0x5A75, 0x5A71, 0x5A0F, 0x5A16, 0x5A0C, 0x5A1C, 0x5A17, 0x5A11, 0x5A07, 0x5A13, 0x5A1D, 0x5A1A, 0x5A4A };
+static constexpr std::array<wchar_t, 16> kL19 = { 0x5A74, 0x5A78, 0x5A7F, 0x5A7B, 0x5A05, 0x5A13, 0x5A1D, 0x5A15, 0x5A05, 0x5A09, 0x5A0F, 0x5A03, 0x5A09, 0x5A1D, 0x5A0F, 0x5A4B };
+static constexpr std::array<wchar_t, 15> kL20 = { 0x5A7F, 0x5A72, 0x5A73, 0x5A72, 0x5A01, 0x5A0F, 0x5A06, 0x5A1C, 0x5A00, 0x5A00, 0x5A05, 0x5A08, 0x5A0C, 0x5A0C, 0x5A4A };
+static constexpr std::array<wchar_t, 14> kL21 = { 0x5A6C, 0x5A7C, 0x5A67, 0x5A73, 0x5A0F, 0x5A00, 0x5A06, 0x5A1C, 0x5A16, 0x5A04, 0x5A08, 0x5A00, 0x5A0D, 0x5A49 };
+static constexpr std::array<wchar_t, 5> kL22 = { 0x5A6C, 0x5A74, 0x5A70, 0x5A78, 0x5A40 };
+static constexpr std::array<wchar_t, 7> kL23 = { 0x5A75, 0x5A73, 0x5A74, 0x5A7A, 0x5A03, 0x5A15, 0x5A42 };
+static constexpr std::array<wchar_t, 6> kL24 = { 0x5A79, 0x5A77, 0x5A7B, 0x5A7C, 0x5A14, 0x5A41 };
+static constexpr std::array<wchar_t, 15> kL25 = { 0x5A6F, 0x5A69, 0x5A7F, 0x5A6B, 0x5A15, 0x5A12, 0x5A1D, 0x5A00, 0x5A0B, 0x5A08, 0x5A0B, 0x5A06, 0x5A06, 0x5A0D, 0x5A4A };
+static constexpr std::array<wchar_t, 7> kL26 = { 0x5A6E, 0x5A78, 0x5A6D, 0x5A6A, 0x5A0C, 0x5A15, 0x5A42 };
+static constexpr std::array<wchar_t, 13> kL27 = { 0x5A6E, 0x5A78, 0x5A79, 0x5A76, 0x5A13, 0x5A15, 0x5A07, 0x5A11, 0x5A1B, 0x5A08, 0x5A02, 0x5A0B, 0x5A48 };
+static constexpr std::array<wchar_t, 16> kL28 = { 0x5A6E, 0x5A78, 0x5A79, 0x5A76, 0x5A13, 0x5A15, 0x5A07, 0x5A11, 0x5A1B, 0x5A06, 0x5A09, 0x5A0A, 0x5A05, 0x5A00, 0x5A1E, 0x5A4B };
+static constexpr std::array<wchar_t, 14> kL29 = { 0x5A7F, 0x5A71, 0x5A7B, 0x5A7E, 0x5A0E, 0x5A14, 0x5A12, 0x5A1C, 0x5A00, 0x5A17, 0x5A07, 0x5A0E, 0x5A06, 0x5A49 };
+static constexpr std::array<wchar_t, 14> kL30 = { 0x5A7F, 0x5A71, 0x5A71, 0x5A6C, 0x5A05, 0x5A1E, 0x5A10, 0x5A06, 0x5A07, 0x5A09, 0x5A07, 0x5A0E, 0x5A05, 0x5A49 };
+static constexpr std::array<wchar_t, 13> kL31 = { 0x5A69, 0x5A73, 0x5A72, 0x5A70, 0x5A01, 0x5A05, 0x5A1D, 0x5A0C, 0x5A13, 0x5A0B, 0x5A03, 0x5A15, 0x5A48 };
+static constexpr std::array<wchar_t, 15> kL32 = { 0x5A6F, 0x5A73, 0x5A7F, 0x5A6F, 0x5A13, 0x5A09, 0x5A0D, 0x5A17, 0x5A1B, 0x5A17, 0x5A03, 0x5A13, 0x5A1A, 0x5A10, 0x5A4A };
+static constexpr std::array<wchar_t, 14> kL33 = { 0x5A6C, 0x5A7C, 0x5A67, 0x5A73, 0x5A0F, 0x5A00, 0x5A06, 0x5A1C, 0x5A0D, 0x5A08, 0x5A07, 0x5A00, 0x5A0D, 0x5A49 };
+static constexpr std::array<wchar_t, 15> kL34 = { 0x5A75, 0x5A73, 0x5A74, 0x5A7A, 0x5A03, 0x5A15, 0x5A1D, 0x5A13, 0x5A16, 0x5A0A, 0x5A05, 0x5A02, 0x5A1B, 0x5A1A, 0x5A4A };
+static constexpr std::array<wchar_t, 15> kL35 = { 0x5A75, 0x5A73, 0x5A74, 0x5A7A, 0x5A03, 0x5A15, 0x5A1D, 0x5A0E, 0x5A05, 0x5A15, 0x5A16, 0x5A0E, 0x5A06, 0x5A0E, 0x5A4A };
+static constexpr std::array<wchar_t, 14> kL36 = { 0x5A75, 0x5A73, 0x5A74, 0x5A7A, 0x5A03, 0x5A15, 0x5A1D, 0x5A17, 0x5A0C, 0x5A17, 0x5A03, 0x5A06, 0x5A0C, 0x5A49 };
+static constexpr std::array<wchar_t, 6> kL37 = { 0x5A79, 0x5A73, 0x5A6A, 0x5A6D, 0x5A19, 0x5A41 };
 
 template <std::size_t N>
 inline void Decode(const std::array<wchar_t, N>& a, wchar_t* destination) {
@@ -72,6 +75,9 @@ inline const wchar_t* LabelStatus(uint32_t code) {
     case 0xC0000184u: { static wchar_t b[28]; Labels::Decode(Labels::kL13, b); return b; }
     case 0xC0000225u: { static wchar_t b[17]; Labels::Decode(Labels::kL14, b); return b; }
     case 0xC000022Du: { static wchar_t b[13]; Labels::Decode(Labels::kL15, b); return b; }
+    case 0xFFFFFFF2u: { static wchar_t b[20]; Labels::Decode(Labels::kL16, b); return b; }
+    case 0xFFFFFFF3u: { static wchar_t b[14]; Labels::Decode(Labels::kL17, b); return b; }
+    case 0xFFFFFFFFu: { static wchar_t b[15]; Labels::Decode(Labels::kL18, b); return b; }
     default: break;
   }
   return nullptr;
@@ -79,25 +85,25 @@ inline const wchar_t* LabelStatus(uint32_t code) {
 
 inline const wchar_t* LabelLog(uint16_t id) {
   switch (id) {
-    case AMGER_LOG_ID_HEADER_VALIDATE: { static wchar_t b[16]; Labels::Decode(Labels::kL16, b); return b; }
-    case AMGER_LOG_ID_COMMAND_DECODE: { static wchar_t b[15]; Labels::Decode(Labels::kL17, b); return b; }
-    case AMGER_LOG_ID_PAYLOAD_RANGE: { static wchar_t b[14]; Labels::Decode(Labels::kL18, b); return b; }
-    case AMGER_LOG_ID_PING: { static wchar_t b[5]; Labels::Decode(Labels::kL19, b); return b; }
-    case AMGER_LOG_ID_INJECT: { static wchar_t b[7]; Labels::Decode(Labels::kL20, b); return b; }
-    case AMGER_LOG_ID_EJECT: { static wchar_t b[6]; Labels::Decode(Labels::kL21, b); return b; }
-    case AMGER_LOG_ID_STATUS_COMMAND: { static wchar_t b[15]; Labels::Decode(Labels::kL22, b); return b; }
-    case AMGER_LOG_ID_RESULT: { static wchar_t b[7]; Labels::Decode(Labels::kL23, b); return b; }
-    case AMGER_LOG_ID_REGISTER_MDL: { static wchar_t b[13]; Labels::Decode(Labels::kL24, b); return b; }
-    case AMGER_LOG_ID_REGISTER_COMMIT: { static wchar_t b[16]; Labels::Decode(Labels::kL25, b); return b; }
-    case AMGER_LOG_ID_CLEANUP_DRAIN: { static wchar_t b[14]; Labels::Decode(Labels::kL26, b); return b; }
-    case AMGER_LOG_ID_CLOSE_RECLAIM: { static wchar_t b[14]; Labels::Decode(Labels::kL27, b); return b; }
-    case AMGER_LOG_ID_UNLOAD_OWNER: { static wchar_t b[13]; Labels::Decode(Labels::kL28, b); return b; }
-    case AMGER_LOG_ID_SNAPSHOT_RETRY: { static wchar_t b[15]; Labels::Decode(Labels::kL29, b); return b; }
-    case AMGER_LOG_ID_PAYLOAD_IMAGE: { static wchar_t b[14]; Labels::Decode(Labels::kL30, b); return b; }
-    case AMGER_LOG_ID_INJECT_PROCESS: { static wchar_t b[15]; Labels::Decode(Labels::kL31, b); return b; }
-    case AMGER_LOG_ID_INJECT_MAPPING: { static wchar_t b[15]; Labels::Decode(Labels::kL32, b); return b; }
-    case AMGER_LOG_ID_INJECT_THREAD: { static wchar_t b[14]; Labels::Decode(Labels::kL33, b); return b; }
-    case AMGER_LOG_ID_ENTRY: { static wchar_t b[6]; Labels::Decode(Labels::kL34, b); return b; }
+    case AMGER_LOG_ID_HEADER_VALIDATE: { static wchar_t b[16]; Labels::Decode(Labels::kL19, b); return b; }
+    case AMGER_LOG_ID_COMMAND_DECODE: { static wchar_t b[15]; Labels::Decode(Labels::kL20, b); return b; }
+    case AMGER_LOG_ID_PAYLOAD_RANGE: { static wchar_t b[14]; Labels::Decode(Labels::kL21, b); return b; }
+    case AMGER_LOG_ID_PING: { static wchar_t b[5]; Labels::Decode(Labels::kL22, b); return b; }
+    case AMGER_LOG_ID_INJECT: { static wchar_t b[7]; Labels::Decode(Labels::kL23, b); return b; }
+    case AMGER_LOG_ID_EJECT: { static wchar_t b[6]; Labels::Decode(Labels::kL24, b); return b; }
+    case AMGER_LOG_ID_STATUS_COMMAND: { static wchar_t b[15]; Labels::Decode(Labels::kL25, b); return b; }
+    case AMGER_LOG_ID_RESULT: { static wchar_t b[7]; Labels::Decode(Labels::kL26, b); return b; }
+    case AMGER_LOG_ID_REGISTER_MDL: { static wchar_t b[13]; Labels::Decode(Labels::kL27, b); return b; }
+    case AMGER_LOG_ID_REGISTER_COMMIT: { static wchar_t b[16]; Labels::Decode(Labels::kL28, b); return b; }
+    case AMGER_LOG_ID_CLEANUP_DRAIN: { static wchar_t b[14]; Labels::Decode(Labels::kL29, b); return b; }
+    case AMGER_LOG_ID_CLOSE_RECLAIM: { static wchar_t b[14]; Labels::Decode(Labels::kL30, b); return b; }
+    case AMGER_LOG_ID_UNLOAD_OWNER: { static wchar_t b[13]; Labels::Decode(Labels::kL31, b); return b; }
+    case AMGER_LOG_ID_SNAPSHOT_RETRY: { static wchar_t b[15]; Labels::Decode(Labels::kL32, b); return b; }
+    case AMGER_LOG_ID_PAYLOAD_IMAGE: { static wchar_t b[14]; Labels::Decode(Labels::kL33, b); return b; }
+    case AMGER_LOG_ID_INJECT_PROCESS: { static wchar_t b[15]; Labels::Decode(Labels::kL34, b); return b; }
+    case AMGER_LOG_ID_INJECT_MAPPING: { static wchar_t b[15]; Labels::Decode(Labels::kL35, b); return b; }
+    case AMGER_LOG_ID_INJECT_THREAD: { static wchar_t b[14]; Labels::Decode(Labels::kL36, b); return b; }
+    case AMGER_LOG_ID_ENTRY: { static wchar_t b[6]; Labels::Decode(Labels::kL37, b); return b; }
     default: break;
   }
   return nullptr;

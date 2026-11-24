@@ -468,7 +468,6 @@ VOID PeBuildReport(
             uint32_t type;
             uint32_t dataSize;
             uint32_t dataRva;
-            uint32_t dataFileOffset;
             uint16_t dllCharacteristics = 0u;
             if (!NT_SUCCESS(PeRvaToOffset(Image, debugRva,
                                           PE_DEBUG_DIRECTORY_SIZE, &entryOffset))) {
@@ -477,11 +476,12 @@ VOID PeBuildReport(
             type = ReadLe32(Image->Base + entryOffset + 12u);
             dataSize = ReadLe32(Image->Base + entryOffset + 16u);
             dataRva = ReadLe32(Image->Base + entryOffset + 20u);
-            dataFileOffset = ReadLe32(Image->Base + entryOffset + 24u);
             if (type == PE_DEBUG_TYPE_EX_DLLCHARACTERISTICS &&
                 dataSize >= 2u && dataRva != 0u) {
-                if ((UINT64)dataFileOffset + 2u > (UINT64)Image->Size ||
-                    !ReadRvaU16(Image, dataRva, &dllCharacteristics)) {
+                /* ReadRvaU16 bounds-checks the RVA through PeRvaToOffset.
+                 * Checking PointerToRawData here validates a different field
+                 * and wrongly rejects entries whose data is only RVA-mapped. */
+                if (!ReadRvaU16(Image, dataRva, &dllCharacteristics)) {
                     break;
                 }
                 if ((dllCharacteristics & PE_DLLCHARACTERISTICS_EX_CET_COMPAT) != 0u) {

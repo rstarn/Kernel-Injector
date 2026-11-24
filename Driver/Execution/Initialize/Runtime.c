@@ -442,6 +442,7 @@ static VOID ProbeMitigations(PAMGER_RUNTIME_STATE state) {
     uint32_t shadow = 0u;
     uint32_t dynamicCode = 0u;
     ULONG returned = 0u;
+    ULONG scratchReturned = 0u;
     NTSTATUS status;
 
     InitializeObjectAttributes(&attributes, NULL, OBJ_KERNEL_HANDLE,
@@ -456,16 +457,18 @@ static VOID ProbeMitigations(PAMGER_RUNTIME_STATE state) {
         if (NT_SUCCESS(status)) {
             status = QueryMitigation(handle,
                                      AMGER_PROCESS_MITIGATION_USER_SHADOW_STACK,
-                                     &shadow, &returned);
+                                     &shadow, &scratchReturned);
         }
         if (NT_SUCCESS(status)) {
             status = QueryMitigation(handle,
                                      AMGER_PROCESS_MITIGATION_DYNAMIC_CODE,
-                                     &dynamicCode, &returned);
+                                     &dynamicCode, &scratchReturned);
         }
         ZwClose(handle);
     }
     state->Report->MitigationQueryStatus = (uint32_t)status;
+    /* Publish the CFG query's length. The other two use scratchReturned so a
+     * later query cannot overwrite the value that exposes a layout mismatch. */
     state->Report->MitigationReturnLength = returned;
     state->Report->CfgPolicyFlags = cfg;
     state->Report->ShadowStackPolicyFlags = shadow;
@@ -756,6 +759,7 @@ static NTSTATUS DetectActivation(PAMGER_RUNTIME_STATE state) {
     uint32_t nameField = 0u;
     uint32_t langField = 0u;
     uint32_t manifestId = 0u;
+    uint32_t languageId = 0u;
     uint32_t dataRva;
     uint32_t offset = 0u;
     uint32_t manifestRva;
@@ -783,9 +787,12 @@ static NTSTATUS DetectActivation(PAMGER_RUNTIME_STATE state) {
         state->Report->ActivationStatus = (uint32_t)STATUS_INVALID_PARAMETER;
         return STATUS_SUCCESS;
     }
+    /* The language directory has its own ID; reusing manifestId here would
+     * overwrite the manifest's ID with the language (e.g. 1033) and make the
+     * ID1/ID2/ID3 classification always OTHER. */
     if (!FindFirstResourceChild(state,
                                 resource.Rva + (nameField & 0x7FFFFFFFu),
-                                &manifestId, &langField) ||
+                                &languageId, &langField) ||
         (langField & 0x80000000u) != 0u) {
         state->Report->ManifestState = AMGER_MANIFEST_MALFORMED;
         state->Report->ActivationStatus = (uint32_t)STATUS_INVALID_PARAMETER;
@@ -1786,8 +1793,12 @@ static NTSTATUS EmitDetourStubs(PAMGER_RUNTIME_STATE state) {
     }
     RtlCopyMemory(state->Original, original, sizeof(state->Original));
 
-    hookStub = state->CodePage + 0x400u;
-    trampoline = state->CodePage + 0x500u;
+    /* PrepareApcStub overwrites the first AMGER_STUB_MAX (0x47C) bytes of this
+     * page. The detour must live past that region or the APC setup wipes it
+     * before ActivateDetour publishes the jump. Both stubs are < 0x100 bytes
+     * and the page is 0x1000, so 0x600/0x700 stay clear of the APC stub. */
+    hookStub = state->CodePage + 0x600u;
+    trampoline = state->CodePage + 0x700u;
 
     /* Replicate the overwritten prologue, check [base, base+SizeOfImage),
      * forward outside the range and otherwise return the private base. */
@@ -2079,6 +2090,9 @@ static VOID AmgerThreadNotify(HANDLE processId, HANDLE threadId,
     }
     index = InterlockedIncrement(&g_r25.Head) - 1L;
     if ((ULONG)(index - g_r25.Tail) >= AMGER_R25_RING) {
+        /* Do not publish a reservation we did not fill: the worker walks
+         * Tail..Head and would otherwise replay an unwritten slot. */
+        (void)InterlockedDecrement(&g_r25.Head);
         (void)InterlockedIncrement(&g_r25.Dropped);
         return;
     }
@@ -2185,8 +2199,14 @@ static VOID AmgerR25AttachThread(HANDLE threadId) {
     }
     KeStackAttachProcess((PRKPROCESS)g_r25.Process, &apcState);
     array = 0u;
-    (void)UserRead(g_r25.Process, (uint64_t)(uintptr_t)teb +
-                   AMGER_TEB_TLS_POINTER, &array, sizeof(array));
+    if (!UserRead(g_r25.Process, (uint64_t)(uintptr_t)teb +
+                   AMGER_TEB_TLS_POINTER, &array, sizeof(array))) {
+        /* An unreadable vector cannot be restored later. Installing a fresh
+         * one would make cleanup write 0 back over the thread's real vector,
+         * destroying every other module's static TLS. Skip this attach. */
+        KeUnstackDetachProcess(&apcState);
+        goto fail;
+    }
     originalArray = array;
     /* An expansion index needs more slots than the primary TEB vector holds.
      * Install a private 512-pointer vector, copying the live entries, and
@@ -2201,14 +2221,27 @@ static VOID AmgerR25AttachThread(HANDLE threadId) {
             KeUnstackDetachProcess(&apcState);
             goto fail;
         }
-        if (array != 0u) {
+        {
+            BOOLEAN copied = TRUE;
+            if (array != 0u) {
 #pragma warning(suppress : 4996)
-            copy = (UCHAR*)ExAllocatePoolWithTag(NonPagedPoolNx, keep, 'grmC');
-            if (copy != NULL) {
-                if (UserRead(g_r25.Process, array, copy, keep)) {
-                    (void)UserWrite(g_r25.Process, freshArray, copy, keep);
+                copy = (UCHAR*)ExAllocatePoolWithTag(NonPagedPoolNx, keep,
+                                                     'grmC');
+                if (copy == NULL ||
+                    !UserRead(g_r25.Process, array, copy, keep) ||
+                    !UserWrite(g_r25.Process, freshArray, copy, keep)) {
+                    copied = FALSE;
                 }
-                ExFreePoolWithTag(copy, 'grmC');
+                if (copy != NULL) {
+                    ExFreePoolWithTag(copy, 'grmC');
+                }
+            }
+            /* Never publish a vector whose preserved slots are missing: the
+             * fresh page is zeroed, so a failed copy would silently drop every
+             * other module's static-TLS pointer for this thread. */
+            if (!copied) {
+                KeUnstackDetachProcess(&apcState);
+                goto fail;
             }
         }
         if (!UserWrite(g_r25.Process, (uint64_t)(uintptr_t)teb +
@@ -2234,6 +2267,7 @@ static VOID AmgerR25AttachThread(HANDLE threadId) {
             jobs[count].Arg3 = 0u;
             ++count;
         }
+        g_state.ThreadCallbacks += count;
         if (count != 0u) {
             (void)UserWrite(g_r25.Process, dataPage, &count, sizeof(count));
             (void)UserWrite(g_r25.Process, dataPage + 8u, jobs,
@@ -2369,6 +2403,7 @@ static VOID UnregisterThreadTlsNotify(VOID) {
     AMGER_RUNTIME_STATE scratch;
     LARGE_INTEGER interval;
     uint32_t i;
+    uint32_t attempt;
     uint64_t zero = 0u;
 
     if (g_r25.Enabled == 0L && g_r25.Process == NULL) {
@@ -2388,14 +2423,42 @@ static VOID UnregisterThreadTlsNotify(VOID) {
     }
     RtlZeroMemory(&scratch, sizeof(scratch));
     scratch.Process = g_r25.Process;
-    /* Every page below is read by the queued stub through either the code/data
-     * pair or the installed static-TLS vector. Gate ALL releases on the same
-     * drain condition; releasing the block while an APC can still run would
-     * leave a dangling TEB slot. */
+
+    /* R25's kernel/rundown routines clear PendingApcs at APC_LEVEL, before the
+     * user stub runs. The data-page completion marker is the only evidence the
+     * stub actually finished, so give queued stubs a bounded chance to publish
+     * it before deciding which pages are safe to release. */
+    if (g_r25.PageCount != 0u) {
+        for (i = 0u; i < g_r25.PageCount; ++i) {
+            uint32_t complete = 0u;
+            for (attempt = 0u; attempt < 200u; ++attempt) {
+                if (g_r25.Datas[i] == 0u ||
+                    UserRead(g_r25.Process,
+                             g_r25.Datas[i] + AMGER_COMPLETION_OFF,
+                             &complete, sizeof(complete)) ||
+                    complete == 1u) {
+                    break;
+                }
+                (void)KeDelayExecutionThread(KernelMode, FALSE, &interval);
+            }
+        }
+    }
+
     if (g_r25.PendingApcs == 0L &&
         InterlockedCompareExchange(&g_apcOutstanding, 0L, 0L) == 0L &&
         !InitializeApcOutstanding()) {
         for (i = 0u; i < g_r25.PageCount; ++i) {
+            uint32_t complete = 0u;
+            /* A stub that never published completion may still dereference the
+             * vector and block. Leak this slot's pages rather than leave a
+             * dangling TEB slot; the process reclaims them on exit. */
+            if (g_r25.Datas[i] == 0u ||
+                !UserRead(g_r25.Process,
+                          g_r25.Datas[i] + AMGER_COMPLETION_OFF,
+                          &complete, sizeof(complete)) ||
+                complete != 1u) {
+                continue;
+            }
             if (g_r25.Arrays[i] != 0u) {
                 (void)UserWrite(g_r25.Process, g_r25.Arrays[i] +
                                 ((uint64_t)g_state.TlsIndexValue * 8u),
@@ -2415,6 +2478,9 @@ static VOID UnregisterThreadTlsNotify(VOID) {
             }
         }
     }
+    /* Slots skipped above keep their pages and TEB vector until process exit;
+     * the reference is still safe to drop here because no kernel access to
+     * g_r25 remains after this point. */
     ObDereferenceObject(g_r25.Process);
     RtlZeroMemory(&g_r25, sizeof(g_r25));
 }
@@ -2677,7 +2743,12 @@ VOID InitializeRevert(const AMGER_INIT_CONTEXT* context) {
                                  bits, state->TlsBitsSize);
     }
 
-    {
+    /* A timed-out stub may still dereference TEB+0x58 -> our TLS block, and an
+     * R25 work item may still read TlsTemplate. Clearing the slot or freeing
+     * those pages here would be a use-after-free in the target. Keep them
+     * allocated when either path can still run; the same policy already applies
+     * to the APC pages below. */
+    if (!InitializeApcOutstanding() && g_r25.Gate == 0L) {
         uint32_t i;
         uint64_t zero = 0u;
         for (i = 0u; i < state->TlsBlockCount; ++i) {
@@ -2711,10 +2782,11 @@ VOID InitializeRevert(const AMGER_INIT_CONTEXT* context) {
     }
     /* A queued user APC may still run after a timeout. Its stub and job block
      * must outlive this revert; leaking the two pages is safer than freeing
-     * memory a live APC is about to execute and read. */
+     * memory a live APC is about to execute and read. g_apcOutstanding is the
+     * KAPC lifetime counter (cleared at APC_LEVEL before the stub runs), so it
+     * must not be used here -- InitializeApcOutstanding is the stub gate. */
 
-    if (!state->LeaveCodePage &&
-        InterlockedCompareExchange(&g_apcOutstanding, 0L, 0L) == 0L) {
+    if (!state->LeaveCodePage && !InitializeApcOutstanding()) {
         ReleasePrivatePage(state, &state->CodePage);
         ReleasePrivatePage(state, &state->DataPage);
     } else {
@@ -2735,6 +2807,15 @@ BOOLEAN InitializeApcOutstanding(VOID) {
      * runs, so it must not gate VAD or stub-page release. */
 
     return InterlockedCompareExchange(&g_apcStubPending, 0L, 0L) != 0L;
+}
+
+VOID InitializeResetApcGate(VOID) {
+    /* A timed-out inject leaves its image, stub pages and TLS blocks mapped, so
+     * a late delivery still has valid memory to touch. That skip already made
+     * the prior inject safe; keeping the counter set would instead make every
+     * later inject skip its own rollback and leak its TLS state. Reset at inject
+     * entry, where no stub of the current invocation can have been queued. */
+    (void)InterlockedExchange(&g_apcStubPending, 0L);
 }
 
 /* ------------------------------------------------------------------ */
@@ -2991,7 +3072,10 @@ NTSTATUS InvokeEntryPhase(const AMGER_INIT_CONTEXT* context,
         (void)InterlockedDecrement(&g_apcStubPending);
     } else {
         /* No completion: the stub may still run. Keep g_apcStubPending set so
-         * RevertImage will not unmap the image it may still call into. */
+         * RevertImage will not unmap the image it may still call into, and keep
+         * these two pages allocated because the stub executes from codePage and
+         * reads its job from dataPage. The leak is deliberate: freeing either
+         * page here would fault a late delivery. */
 
         state->LeaveCodePage = TRUE;
         return FailEntry(report, AMGER_ENTRY_STAGE_CALL, STATUS_UNSUCCESSFUL);

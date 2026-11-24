@@ -336,6 +336,62 @@ ULONG64 BootstrapMachineHash(VOID) {
     return g_machineHash;
 }
 
+/* A previous map can leave the machine-derived Win32 link behind when its
+ * unload fails partway, which makes IoCreateSymbolicLink collide on the next
+ * map. Reclaim it only when nothing answers through its target device. The
+ * link is opened by handle, so deletion is bound to the exact object verified
+ * here, not to a name a concurrent remap could have replaced. */
+static NTSTATUS ReclaimStaleDiscovery(VOID) {
+    OBJECT_ATTRIBUTES attributes;
+    HANDLE linkHandle = NULL;
+    WCHAR targetBuffer[128];
+    UNICODE_STRING target;
+    PFILE_OBJECT fileObject = NULL;
+    PDEVICE_OBJECT deviceObject = NULL;
+    NTSTATUS status;
+    NTSTATUS openStatus;
+
+    InitializeObjectAttributes(&attributes, &g_symbolicLinkName,
+                               OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE,
+                               NULL, NULL);
+    status = ZwOpenSymbolicLinkObject(&linkHandle, DELETE | GENERIC_READ,
+                                      &attributes);
+    if (status == STATUS_OBJECT_NAME_NOT_FOUND) {
+        return STATUS_SUCCESS;
+    }
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
+    RtlInitEmptyUnicodeString(&target, targetBuffer, sizeof(targetBuffer));
+    status = ZwQuerySymbolicLinkObject(linkHandle, &target, NULL);
+    if (!NT_SUCCESS(status)) {
+        ZwClose(linkHandle);
+        return status;
+    }
+
+    openStatus = IoGetDeviceObjectPointer(&target, FILE_READ_DATA,
+                                          &fileObject, &deviceObject);
+    if (NT_SUCCESS(openStatus)) {
+        /* A live instance still owns this link; leave it untouched. */
+        ObDereferenceObject(fileObject);
+        ObDereferenceObject(deviceObject);
+        ZwClose(linkHandle);
+        return STATUS_OBJECT_NAME_COLLISION;
+    }
+    if (openStatus != STATUS_OBJECT_NAME_NOT_FOUND &&
+        openStatus != STATUS_OBJECT_PATH_NOT_FOUND &&
+        openStatus != STATUS_NO_SUCH_DEVICE) {
+        /* Cannot classify it: do not delete a link we do not understand. */
+        ZwClose(linkHandle);
+        return openStatus;
+    }
+
+    status = ZwMakeTemporaryObject(linkHandle);
+    ZwClose(linkHandle);
+    return status;
+}
+
 /* Runs inside IoCreateDriver with the genuine, object-manager-owned driver
  * object. Failure returns hand the object back to IoCreateDriver, which owns
  * cleanup: this callback must never call ObDereferenceObject on it. Bootstrap
@@ -353,13 +409,6 @@ static NTSTATUS BootstrapCreateDriver(
     g_driverObject = DriverObject;
 
     InitializeDerivedNames();
-
-    /* A previous mapping may have left the derived Win32 name behind: client
-     * exit intentionally keeps it and unload can fail partway. Clear any stale
-     * link first so IoCreateSymbolicLink cannot collide. The device object name
-     * is unique per map, so it cannot collide either. */
-
-    (void)IoDeleteSymbolicLink(&g_symbolicLinkName);
 
     status = IoCreateDevice(
         DriverObject,
@@ -390,6 +439,14 @@ static NTSTATUS BootstrapCreateDriver(
     }
 
     status = IoCreateSymbolicLink(&g_symbolicLinkName, &g_deviceName);
+    if (status == STATUS_OBJECT_NAME_COLLISION) {
+        const NTSTATUS reclaimStatus = ReclaimStaleDiscovery();
+        if (NT_SUCCESS(reclaimStatus)) {
+            status = IoCreateSymbolicLink(&g_symbolicLinkName, &g_deviceName);
+        } else {
+            ReportLifecycleFailure(reclaimStatus);
+        }
+    }
     if (!NT_SUCCESS(status)) {
 
         /* Preserve the link failure; record any device-deletion failure. */

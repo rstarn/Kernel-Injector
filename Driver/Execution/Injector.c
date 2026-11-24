@@ -148,6 +148,11 @@ NTSTATUS InjectorExecute(
         return STATUS_INVALID_PARAMETER;
     }
 
+    /* A previous inject may have timed out waiting for a user stub. Its image
+     * and stub pages were kept mapped, so that late stub is still safe; clear
+     * the stale gate now so this inject can roll back normally. */
+    InitializeResetApcGate();
+
     processId = (HANDLE)(uintptr_t)Context->TargetProcessId;
 
     if (Context->AllocReport != NULL) {

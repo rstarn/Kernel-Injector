@@ -61,7 +61,7 @@
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalDependencies>kernel32.lib;user32.lib;advapi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <EnableUAC>false</EnableUAC>
+      <EnableUAC>true</EnableUAC>
       <ApplicationManifest>$(ProjectDir)Client.exe.manifest</ApplicationManifest>
     </Link>
   </ItemDefinitionGroup>
@@ -78,7 +78,7 @@
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>false</GenerateDebugInformation>
       <AdditionalDependencies>kernel32.lib;user32.lib;advapi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <EnableUAC>false</EnableUAC>
+      <EnableUAC>true</EnableUAC>
       <ApplicationManifest>$(ProjectDir)Client.exe.manifest</ApplicationManifest>
     </Link>
   </ItemDefinitionGroup>

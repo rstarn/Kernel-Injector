@@ -260,6 +260,13 @@ static NTSTATUS ResolveDescriptorTable(
             handleRva = Read32(descriptor + 8u);
             iatRva = Read32(descriptor + 12u);
             lookupRva = Read32(descriptor + 16u);
+            /* Test the raw fields before converting legacy VAs: subtracting
+             * the preferred base turns an all-zero terminator into non-zero
+             * values and makes the phase reject otherwise valid DLLs. */
+            if (attributes == 0u && nameRva == 0u && handleRva == 0u &&
+                iatRva == 0u && lookupRva == 0u) {
+                return STATUS_SUCCESS;
+            }
             if ((attributes & 1u) == 0u) {
                 /* Legacy descriptors store absolute VAs built from the
                  * image's preferred base; subtract it to recover the RVA. */

@@ -61,6 +61,15 @@ NTSTATUS BridgeDispatch(
 NTSTATUS BridgeBeginShutdown(VOID);
 
 /*
+ * Contract: waits until every IRP that acquired the remove lock has released
+ * it. DriverUnload and the deferred UNLOAD work item share this so neither can
+ * delete the device while a dispatch is still running. Idempotent for a lock
+ * that has already been drained. Inputs: none. Outputs: none.
+ */
+
+VOID BridgeDrainRemoveLock(VOID);
+
+/*
  * Contract: idempotently releases the registered MDL, unlocks its pages and
  * clears all ownership state. Safe before any registration and after release.
  * Used by CLOSE and unload, which run after outstanding IRPs have completed.

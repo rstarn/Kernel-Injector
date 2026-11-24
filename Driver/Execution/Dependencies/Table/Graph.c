@@ -2,15 +2,17 @@
 #include "../Images.h"
 #include "../../Imports/Lookup.h"
 #include "../../Imports/Binding/Resolve.h"
+#include "../../Mapping/Sections.h"
 
 /*
  * Rounds are bounded: map the modules the primary image is missing, rebind it,
  * then resolve each dependency's own imports and repeat for any new names.
- * Mapping is synchronous and non-recursive, so no cycle can form; every
- * repeated dependency increments the refcount.
+ * Mapping is synchronous and non-recursive, so no LOADING entry is ever seen
+ * on a later round; Cycles is therefore the measured zero. A repeated name in
+ * a round increments that entry's refcount for that round only.
  */
 
-/* Up to 16 modules x 9 deferred names can be collected in a single round. */
+/* Bounded by the maximum number of deferred names a round can collect. */
 #define AMGER_PENDING_MAX 256u
 
 typedef struct _AMGER_PENDING {
@@ -235,6 +237,8 @@ static NTSTATUS ProcessPending(AMGER_DEP_GRAPH* graph,
                         graph->Report->MappedNames[graph->Report->MappedNameCount],
                         AMGER_REPORT_NAME_LENGTH);
             ++graph->Report->MappedNameCount;
+        } else {
+            graph->Report->Flags |= AMGER_DEP_FLAG_NAMES_TRUNCATED;
         }
     }
     return STATUS_SUCCESS;
@@ -309,6 +313,9 @@ NTSTATUS DependenciesResolve(
 
         out->Rounds = round + 1u;
         out->FailureStage = AMGER_DEP_STAGE_ROUND;
+        /* Rebuilding the list each round keeps RefCount a per-round observation
+         * instead of inflating already-LOADED entries once per later round. */
+        pending->Count = 0u;
         CollectDeferred(graph, pending, primaryImports);
         before = graph->Count;
 
@@ -348,6 +355,29 @@ NTSTATUS DependenciesResolve(
             CollectDeferred(graph, pending, &dependencyImports);
         }
     }
+
+    /* Dependencies are mapped RW because ResolveImports rewrites their IATs in
+     * every round. Now that no further writes are planned, promote each mapped
+     * image once so code pages are executable and data pages stop being
+     * writable. Without this, calls into a dependency fault under DEP. */
+    for (index = 0u; index < graph->Count; ++index) {
+        AMGER_DEP_ENTRY* entry = &graph->Entries[index];
+        if (entry->State != AMGER_DEP_STATE_LOADED || entry->Base == 0u) {
+            continue;
+        }
+        {
+            AMGER_MAP_REPORT sealReport;
+            RtlZeroMemory(&sealReport, sizeof(sealReport));
+            out->FailureStage = AMGER_DEP_STAGE_SEAL;
+            status = SectionsSeal(&entry->Image, processId, entry->Base,
+                                  &sealReport);
+            if (!NT_SUCCESS(status)) {
+                failureStatus = status;
+                goto failed;
+            }
+        }
+    }
+    out->FailureStage = AMGER_DEP_STAGE_NONE;
 
     for (index = 0u; index < graph->Count; ++index) {
         AMGER_DEP_ENTRY* entry = &graph->Entries[index];

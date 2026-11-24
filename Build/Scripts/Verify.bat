@@ -35,7 +35,7 @@ if errorlevel 1 set "FAILED=1"
 
 rem plaintext diagnostic labels in the client
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command ^
-  "$b=[IO.File]::ReadAllBytes('%CLIENT%'); $s=[Text.Encoding]::ASCII.GetString($b)+[Text.Encoding]::Unicode.GetString($b); $n=([regex]::Matches($s,'INJECT|UNLOAD_OWNER|STATUS_NOT_IMPLEMENTED|REGISTER_MDL|CLEANUP_DRAIN')).Count; if($n -gt 0){Write-Host ('  [FAIL] client plaintext labels: '+$n); exit 1}else{Write-Host '  [OK] client diagnostic labels obfuscated'; exit 0}"
+  "$b=[IO.File]::ReadAllBytes('%CLIENT%'); $s=[Text.Encoding]::ASCII.GetString($b)+[Text.Encoding]::Unicode.GetString($b); $n=([regex]::Matches($s,'INJECT|UNLOAD_OWNER|STATUS_NOT_IMPLEMENTED|REGISTER_MDL|CLEANUP_DRAIN|STATUS_QUERY_FAILED|BAD_ARGUMENTS|UNKNOWN_0x')).Count; if($n -gt 0){Write-Host ('  [FAIL] client plaintext labels: '+$n); exit 1}else{Write-Host '  [OK] client diagnostic labels obfuscated'; exit 0}"
 if errorlevel 1 set "FAILED=1"
 
 rem Event Log API must not be imported by the driver

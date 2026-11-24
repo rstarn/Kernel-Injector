@@ -135,8 +135,8 @@ typedef struct _AMGER_RESULT_CONTROL {
 #define AMGER_REPORT_FLAG_MANIFEST      0x00000100u
 #define AMGER_REPORT_FLAG_CFG           0x00000200u
 #define AMGER_REPORT_FLAG_CET_COMPAT    0x00000400u
-/* CET process-mitigation state is a Phase 8 (R24/R27) measurement; it is not
- * published by the parser, so no flag is reserved for it here. */
+/* CET process-mitigation state is measured by Phase 6 (R24/R27) and published
+ * in AMGER_INIT_REPORT, not by the parser; no parser flag is reserved here. */
 
 #define AMGER_ALLOC_FLAG_RESERVED   0x00000001u
 #define AMGER_ALLOC_FLAG_RELEASED   0x00000002u
@@ -252,6 +252,8 @@ typedef struct _AMGER_IMPORT_REPORT {
 
 #define AMGER_DEP_FLAG_MAPPED    0x00000001u
 #define AMGER_DEP_FLAG_REVERTED  0x00000002u
+/* More dependencies were mapped than the fixed MappedNames array can hold. */
+#define AMGER_DEP_FLAG_NAMES_TRUNCATED 0x00000004u
 
 #define AMGER_DEP_REPORT_MAX_BASES 16u
 #define AMGER_DEP_REPORT_MAX_NAMES 4u
@@ -266,6 +268,7 @@ typedef struct _AMGER_IMPORT_REPORT {
 #define AMGER_DEP_STAGE_REGISTER   7u
 #define AMGER_DEP_STAGE_IMPORT     8u
 #define AMGER_DEP_STAGE_ROUND      9u
+#define AMGER_DEP_STAGE_SEAL      10u
 
 typedef struct _AMGER_DEP_REPORT {
     uint32_t Status;
@@ -540,7 +543,12 @@ typedef struct _AMGER_PARSER_REPORT {
     X(0xC00000BBu, STATUS_NOT_SUPPORTED)                         \
     X(0xC0000184u, STATUS_INVALID_DEVICE_STATE)                  \
     X(0xC0000225u, STATUS_NOT_FOUND)                             \
-    X(0xC000022Du, STATUS_RETRY)
+    X(0xC000022Du, STATUS_RETRY)                                 \
+    /* Client-local statuses are included so their labels are XOR-encoded by
+     * the same generator instead of being plaintext literals in Main.cpp. */ \
+    X(0xFFFFFFF2u, STATUS_QUERY_FAILED)                          \
+    X(0xFFFFFFF3u, BAD_ARGUMENTS)                                \
+    X(0xFFFFFFFFu, UNKNOWN_STATUS)
 
 #define AMGER_LOG_ID_TABLE(X)                                    \
     X(AMGER_LOG_ID_HEADER_VALIDATE,  HEADER_VALIDATE)             \

@@ -1,5 +1,5 @@
 /*
- * Driver.sys entry point for Phase 1.
+ * Driver.sys entry point for the control plane.
  *
  * Contract: obtain a genuine driver object from the object manager, create the
  * secured well-known device on it, install the IOCTL dispatch and unload
@@ -25,6 +25,10 @@ static VOID DriverUnload(PDRIVER_OBJECT DriverObject) {
      * the region and bootstrap resources are being torn down. */
 
     (void)BridgeBeginShutdown();
+    /* DriverUnload is not preceded by the UNLOAD IRP's deferred work item, so
+     * drain the remove lock here as TeardownWorker does before deleting the
+     * device. Without this an IRP already in a dispatch can race IoDeleteDevice. */
+    BridgeDrainRemoveLock();
     const NTSTATUS regionStatus = BridgeReleaseResources();
 
     /* BootstrapDestroy reports its own failures through BootstrapReportCleanupFailure

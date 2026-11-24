@@ -95,9 +95,7 @@ static uint32_t g_magic = 0u;
 static WORK_QUEUE_ITEM g_teardownWorkItem;
 static BOOLEAN g_teardownQueued = FALSE;
 
-static VOID TeardownWorker(PVOID Context) {
-    UNREFERENCED_PARAMETER(Context);
-
+VOID BridgeDrainRemoveLock(VOID) {
     /* Wait until every in-flight IRP has left its dispatch before deleting the
      * device. This replaces the old fixed 50 ms sleep: IoAcquireRemoveLock +
      * IoReleaseRemoveLockAndWait is the I/O manager's own synchronization, so
@@ -106,17 +104,21 @@ static VOID TeardownWorker(PVOID Context) {
      * never by guessing a duration. Once this returns, no new IRP can acquire
      * the lock (they fail STATUS_DELETE_PENDING), so deletion is race-free. */
 
-    {
-        NTSTATUS drainStatus = IoAcquireRemoveLock(&g_removeLock, NULL);
-        if (NT_SUCCESS(drainStatus)) {
-            IoReleaseRemoveLockAndWait(&g_removeLock, NULL);
-        } else {
+    NTSTATUS drainStatus = IoAcquireRemoveLock(&g_removeLock, NULL);
+    if (NT_SUCCESS(drainStatus)) {
+        IoReleaseRemoveLockAndWait(&g_removeLock, NULL);
+    } else {
 
-            /* Lock already drained/being drained by another teardown path. */
+        /* Lock already drained/being drained by another teardown path. */
 
-            BootstrapReportCleanupFailure(drainStatus);
-        }
+        BootstrapReportCleanupFailure(drainStatus);
     }
+}
+
+static VOID TeardownWorker(PVOID Context) {
+    UNREFERENCED_PARAMETER(Context);
+
+    BridgeDrainRemoveLock();
 
     {
         const NTSTATUS regionStatus = BridgeReleaseResources();

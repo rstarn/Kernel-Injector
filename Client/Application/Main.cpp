@@ -137,22 +137,14 @@ struct Session {
 
 /* Names come from a generated table of XOR-encoded arrays, selected by the
  * raw code/id. No stringified token is materialised, so the diagnostic labels
- * are not plaintext in the binary. */
+ * are not plaintext in the binary. Client-local codes live in the same table. */
 
 const wchar_t* StatusName(uint32_t status) {
-    if (status == AMGER_CLIENT_STATUS_QUERY_FAILED) {
-        return L"STATUS_QUERY_FAILED";
-    }
-    if (status == AMGER_CLIENT_BAD_ARGUMENTS) {
-        return L"BAD_ARGUMENTS";
-    }
     const wchar_t* known = LabelStatus(status);
     if (known != nullptr) {
         return known;
     }
-    static wchar_t unknown[32] = {};
-    swprintf_s(unknown, L"UNKNOWN_0x%08X", status);
-    return unknown;
+    return LabelStatus(0xFFFFFFFFu);
 }
 
 const wchar_t* LogIdName(uint16_t id) {
@@ -219,6 +211,7 @@ const wchar_t* DepStageName(uint32_t stage) {
     case AMGER_DEP_STAGE_REGISTER: return L"dependency register";
     case AMGER_DEP_STAGE_IMPORT: return L"dependency imports";
     case AMGER_DEP_STAGE_ROUND: return L"round limit";
+    case AMGER_DEP_STAGE_SEAL: return L"dependency protections";
     default: return L"unknown";
     }
 }
@@ -231,7 +224,7 @@ const wchar_t* EntryStageName(uint32_t stage) {
     case AMGER_ENTRY_STAGE_ENTRY_RVA: return L"entry RVA";
     case AMGER_ENTRY_STAGE_EXPORT: return L"export lookup";
     case AMGER_ENTRY_STAGE_FORWARD: return L"forwarder";
-    case AMGER_ENTRY_STAGE_CALL: return L"CRT entry call";
+    case AMGER_ENTRY_STAGE_CALL: return L"entry call";
     case AMGER_ENTRY_STAGE_WIPE: return L"header erase";
     case AMGER_ENTRY_STAGE_VERIFY: return L"erase verification";
     default: return L"unknown";
@@ -349,7 +342,8 @@ void InjectScreen(Session& session) {
         return;
     }
 
-    Console::WriteText(L"The selected process target connected successfully. ",
+    /* This is a PID lookup; the device is only opened further down. */
+    Console::WriteText(L"The selected process target was found. ",
                        Console::Brush::LightGreen);
     Console::WriteText(L"(PID: ", Console::Brush::Silver);
     Console::WriteText(std::to_wstring(pid), Console::Brush::LightGreen);
@@ -473,35 +467,38 @@ void InjectScreen(Session& session) {
          * types and PE32. A failed or empty parse cannot support that claim. */
         const bool architectureVerified =
             parser.ParseStatus == 0u && parser.SectionCount != 0u;
+        /* Raw header fields below are only meaningful after a successful parse;
+         * painting them green on rejection would present unverified zeros. */
+        const Console::Brush parseBrush = parser.ParseStatus == 0u ? good : bad;
         emit(L"  Architecture: ",
              architectureVerified ? L"x64 (PE32+, AMD64 only)" : L"unverified",
              architectureVerified ? good : bad);
+        swprintf_s(reportLine, L"0x%X / 0x%X", parser.SectionAlignment, parser.FileAlignment);
+        emit(L"  Section Alignment / File Alignment: ", reportLine, parseBrush);
         swprintf_s(reportLine, L"0x%08X | Image Base: 0x%016llX", parser.PeOffset,
                    static_cast<unsigned long long>(parser.ImageBase));
-        emit(L"  PE Offset: ", reportLine, good);
-        swprintf_s(reportLine, L"0x%X / 0x%X", parser.SectionAlignment, parser.FileAlignment);
-        emit(L"  Section Alignment / File Alignment: ", reportLine, good);
+        emit(L"  PE Offset: ", reportLine, parseBrush);
         Console::WriteRaw(L"\n");
-        swprintf_s(reportLine, L"0x%04X | File Characteristics: 0x%04X",
-                   parser.DllCharacteristics, parser.FileCharacteristics);
-        emit(L"  DLL Characteristics: ", reportLine, good);
         swprintf_s(reportLine, L"RVA 0x%08X | Sections: %u", parser.EntryPoint,
                    static_cast<unsigned>(parser.SectionCount));
-        emit(L"  Entry Point: ", reportLine, good);
+        emit(L"  Entry Point: ", reportLine, parseBrush);
+        swprintf_s(reportLine, L"0x%04X | File Characteristics: 0x%04X",
+                   parser.DllCharacteristics, parser.FileCharacteristics);
+        emit(L"  DLL Characteristics: ", reportLine, parseBrush);
         Console::WriteRaw(L"\n");
+        emit(L"  TLS Directory: ", FlagText(parser.Flags, AMGER_REPORT_FLAG_TLS),
+             presence(parser.Flags, AMGER_REPORT_FLAG_TLS));
         emit(L"  Load Configuration: ",
              FlagText(parser.Flags, AMGER_REPORT_FLAG_LOAD_CONFIG),
              presence(parser.Flags, AMGER_REPORT_FLAG_LOAD_CONFIG));
-        emit(L"  TLS Directory: ", FlagText(parser.Flags, AMGER_REPORT_FLAG_TLS),
-             presence(parser.Flags, AMGER_REPORT_FLAG_TLS));
         Console::WriteRaw(L"\n");
+        emit(L"  Activation Context Manifest: ",
+             FlagText(parser.Flags, AMGER_REPORT_FLAG_MANIFEST),
+             presence(parser.Flags, AMGER_REPORT_FLAG_MANIFEST));
         swprintf_s(reportLine, L"%s (RVA 0x%08X)",
                    parser.SecurityCookieRva != 0u ? L"Present" : L"Not Present",
                    parser.SecurityCookieRva);
         emit(L"  Security Cookie: ", reportLine, parser.SecurityCookieRva != 0u ? good : bad);
-        emit(L"  Activation Context Manifest: ",
-             FlagText(parser.Flags, AMGER_REPORT_FLAG_MANIFEST),
-             presence(parser.Flags, AMGER_REPORT_FLAG_MANIFEST));
         Console::WriteRaw(L"\n");
         emit(L"  Debug Directory: ", FlagText(parser.Flags, AMGER_REPORT_FLAG_DEBUG),
              presence(parser.Flags, AMGER_REPORT_FLAG_DEBUG));
@@ -509,14 +506,14 @@ void InjectScreen(Session& session) {
              presence(parser.Flags, AMGER_REPORT_FLAG_RESOURCE));
         Console::WriteRaw(L"\n");
 
+        emit(L"  Exception Directory: ",
+             FlagText(parser.Flags, AMGER_REPORT_FLAG_EXCEPTIONS),
+             presence(parser.Flags, AMGER_REPORT_FLAG_EXCEPTIONS));
         swprintf_s(reportLine, L"%s (DIR64 %u, HIGHLOW %u)",
                    FlagText(parser.Flags, AMGER_REPORT_FLAG_RELOCATIONS),
                    parser.RelocDir64Count, parser.RelocHighLowCount);
         emit(L"  Base Relocations: ", reportLine,
              presence(parser.Flags, AMGER_REPORT_FLAG_RELOCATIONS));
-        emit(L"  Exception Directory: ",
-             FlagText(parser.Flags, AMGER_REPORT_FLAG_EXCEPTIONS),
-             presence(parser.Flags, AMGER_REPORT_FLAG_EXCEPTIONS));
         Console::WriteRaw(L"\n");
         swprintf_s(reportLine, L"%u", static_cast<unsigned>(parser.DirectoryCount));
         emit(L"  Data Directories: ", reportLine, parser.DirectoryCount != 0u ? good : bad);
@@ -532,20 +529,20 @@ void InjectScreen(Session& session) {
         emit(L"  CET Compat: ", reportLine, hardened ? good : bad);
         swprintf_s(reportLine, L"0x%08X | Headers Size: 0x%08X",
                    parser.SizeOfImage, parser.SizeOfHeaders);
-        emit(L"  Image Size: ", reportLine, good);
+        emit(L"  Image Size: ", reportLine, parseBrush);
         Console::WriteRaw(L"\n");
 
         emitList(L"  Import Modules: ", importList);
         Console::WriteRaw(L"\n");
 
+        emit(L"  Bound Imports: ",
+             FlagText(parser.Flags, AMGER_REPORT_FLAG_BOUND_IMPORTS),
+             presence(parser.Flags, AMGER_REPORT_FLAG_BOUND_IMPORTS));
+        emit(L"  Exports Modules: ", exports.c_str(), good);
         Console::WriteText(L"  Delay-load imports: ", Console::Brush::White);
         swprintf_s(reportLine, L"%u", parser.DelayImportCount);
         Console::WriteText(reportLine, good);
         Console::WriteText(L" Modules\n", Console::Brush::White);
-        emit(L"  Exports Modules: ", exports.c_str(), good);
-        emit(L"  Bound Imports: ",
-             FlagText(parser.Flags, AMGER_REPORT_FLAG_BOUND_IMPORTS),
-             presence(parser.Flags, AMGER_REPORT_FLAG_BOUND_IMPORTS));
         Console::WriteRaw(L"\n");
 
         swprintf_s(reportLine, L"%u", parser.ForwardedCount);
@@ -571,10 +568,10 @@ void InjectScreen(Session& session) {
             emit(L"  Status: ", reportLine, alloc.Status == 0u ? good : bad);
             Console::WriteRaw(L"\n");
 
-            swprintf_s(reportLine, L"0x%08X", alloc.ImageSize);
-            emit(L"  Image Size: ", reportLine, good);
             swprintf_s(reportLine, L"%u", alloc.TargetProcessId);
             emit(L"  Target PID: ", reportLine, good);
+            swprintf_s(reportLine, L"0x%08X", alloc.ImageSize);
+            emit(L"  Image Size: ", reportLine, good);
             Console::WriteRaw(L"\n");
             const bool aligned = alloc.RemoteBase != 0u &&
                                  (alloc.RemoteBase & 0xFFFFu) == 0u;
@@ -589,17 +586,18 @@ void InjectScreen(Session& session) {
             const bool released = (alloc.Flags & AMGER_ALLOC_FLAG_RELEASED) != 0u;
             const bool committed =
                 (parser.Mapping.Flags & AMGER_MAP_FLAG_COMMITTED) != 0u;
+            emit(L"  Commit: ", committed ? L"read/write" : L"not committed",
+                 committed ? good : bad);
             emit(L"  Reservation: ",
                  released ? L"released" : reserved ? L"active" : L"none",
                  reserved ? good : bad);
-            emit(L"  Commit: ", committed ? L"read/write" : L"not committed",
-                 committed ? good : bad);
             Console::WriteRaw(L"\n");
 
             emit(L"  Rollback: ",
                  released ? L"reserved region released" : L"reservation retained",
                  released ? good : bad);
-            emit(L"  Execution: ", executionText, bad);
+            emit(L"  Execution: ", executionText,
+                 entryCalled ? good : bad);
             Console::WriteRaw(L"\n");
         }
 
@@ -619,40 +617,41 @@ void InjectScreen(Session& session) {
                 emit(L"  Failure Stage: ", reportLine, bad);
             }
             Console::WriteRaw(L"\n");
+            swprintf_s(reportLine, L"%u", static_cast<unsigned>(map.SectionCount));
+            emit(L"  Sections: ", reportLine, good);
+            swprintf_s(reportLine, L"0x%08X", map.ImageSize);
+            emit(L"  Image Size: ", reportLine, good);
             swprintf_s(reportLine, L"0x%016llX",
                        static_cast<unsigned long long>(map.RemoteBase));
             emit(L"  Remote Base: ", reportLine, map.RemoteBase != 0u ? good : bad);
-            swprintf_s(reportLine, L"0x%08X", map.ImageSize);
-            emit(L"  Image Size: ", reportLine, good);
-            swprintf_s(reportLine, L"%u", static_cast<unsigned>(map.SectionCount));
-            emit(L"  Sections: ", reportLine, good);
             Console::WriteRaw(L"\n");
 
-            swprintf_s(reportLine, L"0x%08X", map.BytesCopied);
-            emit(L"  Bytes Copied: ", reportLine, good);
-            swprintf_s(reportLine, L"0x%08X", map.ZeroFilled);
-            emit(L"  Zero Filled: ", reportLine, good);
             swprintf_s(reportLine, L"0x%08X", map.HeaderBytes);
             emit(L"  Headers: ", reportLine, good);
+            swprintf_s(reportLine, L"0x%08X", map.ZeroFilled);
+            emit(L"  Zero Filled: ", reportLine, good);
+            swprintf_s(reportLine, L"0x%08X", map.BytesCopied);
+            emit(L"  Bytes Copied: ", reportLine, good);
             Console::WriteRaw(L"\n");
 
             const bool committed = (map.Flags & AMGER_MAP_FLAG_COMMITTED) != 0u;
             const bool sealed = (map.Flags & AMGER_MAP_FLAG_PROTECTED) != 0u;
+            swprintf_s(reportLine, L"%u", static_cast<unsigned>(map.PageGroups));
+            emit(L"  Page Groups: ", reportLine, sealed ? good : bad);
             emit(L"  Commit: ", committed ? L"read/write" : L"not committed",
                  committed ? good : bad);
             /* Flag-derived state only: no rendered field measures the actual
-             * page protections. PageGroups is reported separately below. */
+             * page protections. PageGroups is reported separately above. */
             emit(L"  Protections: ", sealed ? L"applied" : L"pending",
                  sealed ? good : bad);
-            swprintf_s(reportLine, L"%u", static_cast<unsigned>(map.PageGroups));
-            emit(L"  Page Groups: ", reportLine, sealed ? good : bad);
             Console::WriteRaw(L"\n");
 
             const bool reverted = (map.Flags & AMGER_MAP_FLAG_REVERTED) != 0u;
             emit(L"  Rollback: ",
                  reverted ? L"mapping reverted" : L"mapping retained",
                  reverted ? good : bad);
-            emit(L"  Execution: ", executionText, bad);
+            emit(L"  Execution: ", executionText,
+                 entryCalled ? good : bad);
             Console::WriteRaw(L"\n");
         }
 
@@ -705,7 +704,8 @@ void InjectScreen(Session& session) {
             emit(L"  Rollback: ",
                  reverted ? L"mapping reverted" : L"mapping retained",
                  reverted ? good : bad);
-            emit(L"  Execution: ", executionText, bad);
+            emit(L"  Execution: ", executionText,
+                 entryCalled ? good : bad);
             Console::WriteRaw(L"\n");
         }
 
@@ -763,13 +763,13 @@ void InjectScreen(Session& session) {
                  imports.DeferredModuleCount == 0u ? good : bad);
             emit(L"  Bound Imports: ", boundCleared ? L"cleared" : L"not cleared",
                  boundCleared ? good : bad);
-            emit(L"  Pending List Truncated: ",
-                 FlagText(imports.Flags, AMGER_IMPORT_FLAG_DEFERRED_TRUNCATED),
-                 (imports.Flags & AMGER_IMPORT_FLAG_DEFERRED_TRUNCATED) != 0u
-                     ? bad : good);
             emit(L"  Thunk List Truncated: ",
                  FlagText(imports.Flags, AMGER_IMPORT_FLAG_THUNK_TRUNCATED),
                  (imports.Flags & AMGER_IMPORT_FLAG_THUNK_TRUNCATED) != 0u
+                     ? bad : good);
+            emit(L"  Pending List Truncated: ",
+                 FlagText(imports.Flags, AMGER_IMPORT_FLAG_DEFERRED_TRUNCATED),
+                 (imports.Flags & AMGER_IMPORT_FLAG_DEFERRED_TRUNCATED) != 0u
                      ? bad : good);
             Console::WriteRaw(L"\n");
 
@@ -778,7 +778,8 @@ void InjectScreen(Session& session) {
             emit(L"  Rollback: ",
                  reverted ? L"mapping reverted" : L"mapping retained",
                  reverted ? good : bad);
-            emit(L"  Execution: ", executionText, bad);
+            emit(L"  Execution: ", executionText,
+                 entryCalled ? good : bad);
             Console::WriteRaw(L"\n");
         }
 
@@ -813,11 +814,11 @@ void InjectScreen(Session& session) {
             emit(L"  Dependency Imports: ", reportLine, good);
             Console::WriteRaw(L"\n");
 
+            swprintf_s(reportLine, L"%u", static_cast<unsigned>(dep.FileOpens));
+            emit(L"  File Opens: ", reportLine, good);
             swprintf_s(reportLine, L"0x%016llX",
                        static_cast<unsigned long long>(dep.BytesRead));
             emit(L"  Bytes Read: ", reportLine, good);
-            swprintf_s(reportLine, L"%u", static_cast<unsigned>(dep.FileOpens));
-            emit(L"  File Opens: ", reportLine, good);
             Console::WriteRaw(L"\n");
 
             swprintf_s(reportLine, L"%u", manualMapModules);
@@ -858,6 +859,12 @@ void InjectScreen(Session& session) {
                     emit(L"    ", reportLine, good);
                 }
                 Console::WriteRaw(L"\n");
+                const bool namesTruncated =
+                    (dep.Flags & AMGER_DEP_FLAG_NAMES_TRUNCATED) != 0u;
+                emit(L"  Mapped Names Truncated: ",
+                     namesTruncated ? L"Yes" : L"No",
+                     namesTruncated ? bad : good);
+                Console::WriteRaw(L"\n");
             }
 
             const bool reverted =
@@ -865,7 +872,8 @@ void InjectScreen(Session& session) {
             emit(L"  Rollback: ",
                  reverted ? L"dependencies released" : L"dependencies retained",
                  reverted ? good : bad);
-            emit(L"  Execution: ", executionText, bad);
+            emit(L"  Execution: ", executionText,
+                 entryCalled ? good : bad);
             Console::WriteRaw(L"\n");
         }
 
@@ -1015,7 +1023,8 @@ void InjectScreen(Session& session) {
             emit(L"  Rollback: ",
                  reverted ? L"initialization reverted" : L"initialization retained",
                  reverted ? good : bad);
-            emit(L"  Execution: ", executionText, bad);
+            emit(L"  Execution: ", executionText,
+                 entryCalled ? good : bad);
             Console::WriteRaw(L"\n");
         }
 
@@ -1046,10 +1055,6 @@ void InjectScreen(Session& session) {
             }
             emit(L"  Kind: ", kind,
                  entry.EntryKind <= AMGER_ENTRY_KIND_ORDINAL ? good : bad);
-            swprintf_s(reportLine, L"RVA 0x%08X @ 0x%016llX", entry.EntryRva,
-                       static_cast<unsigned long long>(entry.EntryAddress));
-            emit(L"  Resolved Entry: ", reportLine,
-                 (entry.Flags & AMGER_ENTRY_FLAG_RESOLVED) != 0u ? good : bad);
             if (entry.EntryKind == AMGER_ENTRY_KIND_EXPORT_NAME) {
                 swprintf_s(reportLine, L"%S", entry.EntryName);
                 emit(L"  Export Name: ", reportLine, good);
@@ -1057,6 +1062,10 @@ void InjectScreen(Session& session) {
                 swprintf_s(reportLine, L"%u", entry.EntryOrdinal);
                 emit(L"  Export Ordinal: ", reportLine, good);
             }
+            swprintf_s(reportLine, L"RVA 0x%08X @ 0x%016llX", entry.EntryRva,
+                       static_cast<unsigned long long>(entry.EntryAddress));
+            emit(L"  Resolved Entry: ", reportLine,
+                 (entry.Flags & AMGER_ENTRY_FLAG_RESOLVED) != 0u ? good : bad);
             Console::WriteRaw(L"\n");
 
             /* A FALSE return is a measured payload result (flagged by the
@@ -1066,7 +1075,7 @@ void InjectScreen(Session& session) {
                 (entry.Flags & AMGER_ENTRY_FLAG_CRT_FALSE) != 0u;
             swprintf_s(reportLine, L"0x%08X%s", entry.EntryResult,
                        crtFalse ? L" (payload refused attach)" : L"");
-            emit(L"  CRT Result: ", reportLine,
+            emit(L"  Entry Result: ", reportLine,
                  (entry.Flags & AMGER_ENTRY_FLAG_CALLED) != 0u ? good : bad);
             swprintf_s(reportLine,
                        L"%u / %u | Started = %u / Completion = 0x%08X",
@@ -1084,18 +1093,14 @@ void InjectScreen(Session& session) {
         }
     }
 
-    /* The INJECT command has already been issued above, so this is
-     * NOT a cancellation prompt - answering N cannot undo anything. The injection
-     * engine is deferred, so word it as a status note rather than asking for a
-     * decision that has no effect. Kept as an interaction so the existing menu
-     * flow (which expects a keypress here) is unchanged. */
+    /* The INJECT command has already been issued above, so this is a status
+     * note, not a decision prompt. The menu loop performs the single pause
+     * after every screen, so do not wait for a key here as well. */
 
     Console::WriteText(L"Injection Engine: ", Console::Brush::Silver);
     Console::WriteLine(L"deferred (payload submitted to the driver above).",
                        Console::Brush::LightYellow);
     Console::WriteRaw(L"\n");
-    Console::WriteText(L"Press Enter to continue...", Console::Brush::Gray);
-    (void)Console::ReadLine(L"", Console::Brush::Silver);
 
     const uint64_t remoteBase = session.channel.ResultValue();
     if (remoteBase != 0u) {
